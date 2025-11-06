@@ -2,6 +2,10 @@
 
 MCP plugin to control Android devices via ADB for automation, testing, and agent integration.
 
+<a href="https://glama.ai/mcp/servers/@TiagoDanin/Android-Debug-Bridge-MCP">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@TiagoDanin/Android-Debug-Bridge-MCP/badge" alt="Android Debug Bridge MCP server" />
+</a>
+
 ## Features
 
 This MCP server provides tools to:
