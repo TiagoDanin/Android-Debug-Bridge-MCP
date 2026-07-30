@@ -71,6 +71,7 @@ import {
   findOnScreen,
   formatMatches,
   formatUI,
+  resolveTapPoint,
   waitForElement,
   MatchedElement,
   FindQuery,
@@ -302,7 +303,7 @@ export const registry: Record<string, CommandGroup> = {
         },
       },
       tap: {
-        usage: 'ui tap <query> [--index <n>] [--exact]',
+        usage: 'ui tap <query> [--index <n>] [--exact] [--force]',
         summary: 'Tap the element matching a query — resilient to layout changes',
         run: async (ctx) => {
           const index = flagNumber(ctx.flags, 'index') ?? 0;
@@ -312,7 +313,7 @@ export const registry: Record<string, CommandGroup> = {
             throw new Error('missing required argument <query>');
           }
 
-          const { matches } = await findOnScreen(query, ctx.adb);
+          const { matches, tree } = await findOnScreen(query, ctx.adb);
 
           if (matches.length === 0) {
             throw new Error(`no element matches "${query.query ?? JSON.stringify(query)}"`);
@@ -324,13 +325,29 @@ export const registry: Record<string, CommandGroup> = {
             throw new Error(`--index ${index} is out of range (${matches.length} matches)`);
           }
 
-          const result = await tap(target.center.x, target.center.y, 'pixels', ctx.adb);
+          const plan = resolveTapPoint(target, tree.all);
+
+          if (plan.occludedBy && !flagBoolean(ctx.flags, 'force')) {
+            throw new Error(
+              `"${describeElement(target)}" is covered by "${describeElement(plan.occludedBy)}" at (${plan.point.x}, ${plan.point.y}) — tapping there would hit the overlay instead. Scroll the element clear, act on the overlay, or pass --force to tap anyway.`
+            );
+          }
+
+          const result = await tap(plan.point.x, plan.point.y, 'pixels', ctx.adb);
+          const note =
+            plan.strategy === 'offset'
+              ? ' (offset from center, which was covered)'
+              : plan.occludedBy
+                ? ' (forced through an overlay)'
+                : '';
 
           return {
-            summary: `tapped "${describeElement(target)}" at (${result.point.x}, ${result.point.y})`,
+            summary: `tapped "${describeElement(target)}" at (${result.point.x}, ${result.point.y})${note}`,
             data: {
               tapped: serializeMatch(target),
               point: { x: result.point.x, y: result.point.y },
+              strategy: plan.strategy,
+              occludedBy: plan.occludedBy ? describeElement(plan.occludedBy) : null,
               candidates: matches.length,
             },
           };

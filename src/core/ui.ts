@@ -4,6 +4,7 @@ import {
   ProcessedUIData,
   UIElement,
   formatElementsForDisplay,
+  inlineLabel,
   parseUIAutomatorXML,
 } from '../utils/xmlParser.js';
 
@@ -191,13 +192,95 @@ export async function waitForElement(
 
 /** Human-readable label for an element, used in CLI/MCP output. */
 export function describeElement(element: UIElement): string {
-  return (
+  return inlineLabel(
     element.text?.trim() ||
-    element.contentDesc?.trim() ||
-    element.resourceId?.trim() ||
-    element.className ||
-    'unlabeled element'
+      element.contentDesc?.trim() ||
+      element.resourceId?.trim() ||
+      element.className ||
+      'unlabeled element'
   );
+}
+
+export interface TapPlan {
+  point: { x: number; y: number };
+  /** `center` when the element's center is free, `offset` when it was covered. */
+  strategy: 'center' | 'offset';
+  /** The clickable element sitting on top of every candidate point, if any. */
+  occludedBy: UIElement | null;
+}
+
+type Bounds = UIElement['bounds'];
+
+function containsPoint(bounds: Bounds, x: number, y: number): boolean {
+  return x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom;
+}
+
+/**
+ * True when `element` is a descendant of `ancestor` in the XML tree. Tested on
+ * the path, never on geometry: a bottom bar can be drawn entirely inside a
+ * banner's bounds while being a sibling that covers it.
+ */
+function isDescendantOf(element: UIElement, ancestor: UIElement): boolean {
+  return element.path.startsWith(`${ancestor.path}.`);
+}
+
+/**
+ * Clickable elements drawn after `target` that cover the given point. Children
+ * of the target are excluded: they are part of it, not something on top of it.
+ */
+function occludersAt(target: UIElement, all: UIElement[], x: number, y: number): UIElement[] {
+  return all
+    .filter(
+      (element) =>
+        element.index > target.index &&
+        element.clickable &&
+        containsPoint(element.bounds, x, y) &&
+        !isDescendantOf(element, target)
+    )
+    .sort((a, b) => b.index - a.index);
+}
+
+const CANDIDATE_FRACTIONS = [0.5, 0.3, 0.7, 0.15, 0.85];
+
+/**
+ * Pick where to tap an element.
+ *
+ * The center is the natural target, but a bottom bar, FAB or sticky banner can
+ * be painted over it — UIAutomator reports the element's full logical bounds
+ * with no notion of what is actually on top. Tapping the center then activates
+ * the overlay while the caller believes it hit the element. So: try the center,
+ * fall back to points inside the element that nothing covers, and report the
+ * blocker when every candidate is covered.
+ */
+export function resolveTapPoint(target: UIElement, all: UIElement[]): TapPlan {
+  const candidates: Array<{ x: number; y: number; distance: number }> = [];
+
+  for (const fx of CANDIDATE_FRACTIONS) {
+    for (const fy of CANDIDATE_FRACTIONS) {
+      candidates.push({
+        x: Math.round(target.bounds.left + target.size.width * fx),
+        y: Math.round(target.bounds.top + target.size.height * fy),
+        distance: Math.abs(fx - 0.5) + Math.abs(fy - 0.5),
+      });
+    }
+  }
+
+  candidates.sort((a, b) => a.distance - b.distance);
+
+  for (const candidate of candidates) {
+    if (occludersAt(target, all, candidate.x, candidate.y).length === 0) {
+      const isCenter = candidate.distance === 0;
+      return {
+        point: isCenter ? target.center : { x: candidate.x, y: candidate.y },
+        strategy: isCenter ? 'center' : 'offset',
+        occludedBy: null,
+      };
+    }
+  }
+
+  const [blocker] = occludersAt(target, all, target.center.x, target.center.y);
+
+  return { point: target.center, strategy: 'center', occludedBy: blocker ?? null };
 }
 
 export function formatMatches(matches: MatchedElement[], limit = 20): string {

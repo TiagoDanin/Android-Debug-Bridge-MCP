@@ -1,6 +1,19 @@
 import * as xml2js from 'xml2js';
 
 export interface UIElement {
+  /**
+   * Position in document order. UIAutomator emits siblings in draw order, so a
+   * higher index means the element is painted later — on top of earlier ones.
+   * Used to detect elements hidden behind overlays and bottom bars.
+   */
+  index: number;
+  /**
+   * Position in the XML tree as a dotted path ("0.2.1"), so ancestry can be
+   * tested after the tree is flattened: `child.path` starts with `parent.path`
+   * plus a dot. Geometry is not a substitute — an overlay can sit inside
+   * another element's bounds without being its child.
+   */
+  path: string;
   type: string;
   text: string;
   contentDesc: string;
@@ -76,6 +89,8 @@ function processNode(node: any): UIElement | null {
   const size = calculateSize(bounds);
 
   return {
+    index: -1,
+    path: '',
     type: getElementType(attrs),
     text: attrs.text || '',
     contentDesc: attrs['content-desc'] || '',
@@ -118,19 +133,21 @@ function getElementType(attrs: any): string {
   return 'view';
 }
 
-function extractElements(node: any, elements: UIElement[] = []): UIElement[] {
+function extractElements(node: any, elements: UIElement[] = [], path = '0'): UIElement[] {
   const element = processNode(node);
   if (element && isRelevantElement(element)) {
+    element.index = elements.length;
+    element.path = path;
     elements.push(element);
   }
 
-  if (node.node && Array.isArray(node.node)) {
-    for (const childNode of node.node) {
-      extractElements(childNode, elements);
-    }
-  } else if (node.node && typeof node.node === 'object') {
-    extractElements(node.node, elements);
-  }
+  // The path follows the XML tree, not the filtered output, so ancestry still
+  // holds for elements whose parents were dropped as irrelevant.
+  const children = Array.isArray(node.node) ? node.node : node.node ? [node.node] : [];
+
+  children.forEach((childNode: any, childIndex: number) => {
+    extractElements(childNode, elements, `${path}.${childIndex}`);
+  });
 
   return elements;
 }
@@ -205,16 +222,26 @@ export async function parseUIAutomatorXML(xmlContent: string): Promise<Processed
   }
 }
 
+/**
+ * Collapse a label onto a single line for display. Android text nodes often
+ * carry embedded newlines (a transaction row is title + subtitle + amount),
+ * which would otherwise break the one-element-per-line output contract.
+ * Only presentation is affected — the original text stays in the JSON payload.
+ */
+export function inlineLabel(value: string): string {
+  return value.replace(/\s*\r?\n\s*/g, ' · ').trim();
+}
+
 export function formatElementsForDisplay(data: ProcessedUIData): string {
   let output = '=== UI ELEMENTS ANALYSIS ===\n\n';
 
   if (data.texts.length > 0) {
     output += 'TEXTS:\n';
     data.texts.forEach((el, i) => {
-      const displayText = el.text || el.contentDesc || 'Empty text';
+      const displayText = inlineLabel(el.text || el.contentDesc || 'Empty text');
       output += `  ${i + 1}. "${displayText}" at center (${el.center.x}, ${el.center.y}) [size ${el.size.width}x${el.size.height}]\n`;
       if (el.resourceId) output += `     ID: ${el.resourceId}\n`;
-      if (el.contentDesc && el.contentDesc !== el.text) output += `     DESC: ${el.contentDesc}\n`;
+      if (el.contentDesc && el.contentDesc !== el.text) output += `     DESC: ${inlineLabel(el.contentDesc)}\n`;
     });
     output += '\n';
   }
@@ -222,7 +249,7 @@ export function formatElementsForDisplay(data: ProcessedUIData): string {
   if (data.buttons.length > 0) {
     output += 'BUTTONS/CLICKABLES:\n';
     data.buttons.forEach((el, i) => {
-      const label = el.contentDesc || el.text || 'Unlabeled button';
+      const label = inlineLabel(el.contentDesc || el.text || 'Unlabeled button');
       output += `  ${i + 1}. "${label}" at center (${el.center.x}, ${el.center.y}) [size ${el.size.width}x${el.size.height}]\n`;
       if (el.resourceId) output += `     ID: ${el.resourceId}\n`;
       if (el.className) output += `     CLASS: ${el.className}\n`;
@@ -234,8 +261,8 @@ export function formatElementsForDisplay(data: ProcessedUIData): string {
   if (data.inputs.length > 0) {
     output += 'INPUT FIELDS:\n';
     data.inputs.forEach((el, i) => {
-      const currentValue = el.text || 'Empty';
-      const placeholder = el.contentDesc || 'No description';
+      const currentValue = inlineLabel(el.text || 'Empty');
+      const placeholder = inlineLabel(el.contentDesc || 'No description');
       output += `  ${i + 1}. Value: "${currentValue}" | Desc: "${placeholder}" at center (${el.center.x}, ${el.center.y}) [size ${el.size.width}x${el.size.height}]\n`;
       if (el.resourceId) output += `     ID: ${el.resourceId}\n`;
       if (!el.enabled) output += `     ⚠️  DISABLED\n`;
@@ -246,7 +273,7 @@ export function formatElementsForDisplay(data: ProcessedUIData): string {
   if (data.switches.length > 0) {
     output += 'SWITCHES/TOGGLES:\n';
     data.switches.forEach((el, i) => {
-      const label = el.contentDesc || el.text || 'Unlabeled switch';
+      const label = inlineLabel(el.contentDesc || el.text || 'Unlabeled switch');
       const state = el.checked ? 'ON' : 'OFF';
       output += `  ${i + 1}. "${label}" [${state}] at center (${el.center.x}, ${el.center.y}) [size ${el.size.width}x${el.size.height}]\n`;
       if (el.resourceId) output += `     ID: ${el.resourceId}\n`;
@@ -257,7 +284,7 @@ export function formatElementsForDisplay(data: ProcessedUIData): string {
   if (data.scrollables.length > 0) {
     output += 'SCROLLABLE AREAS:\n';
     data.scrollables.forEach((el, i) => {
-      const label = el.contentDesc || el.resourceId || 'Scrollable area';
+      const label = inlineLabel(el.contentDesc || el.resourceId || 'Scrollable area');
       output += `  ${i + 1}. "${label}" at center (${el.center.x}, ${el.center.y}) [size ${el.size.width}x${el.size.height}]\n`;
     });
     output += '\n';

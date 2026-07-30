@@ -71,6 +71,7 @@ import {
   findOnScreen,
   formatMatches,
   formatUI,
+  resolveTapPoint,
   waitForElement,
 } from '../core/ui.js';
 
@@ -220,7 +221,7 @@ export const toolHandlers = {
   ui_tap: async (args: any) => {
     const options = adbOptions(args);
     const index = args?.index ?? 0;
-    const { matches } = await findOnScreen(buildQuery(args), options);
+    const { matches, tree } = await findOnScreen(buildQuery(args), options);
 
     if (matches.length === 0) {
       throw new McpError(
@@ -238,13 +239,28 @@ export const toolHandlers = {
       );
     }
 
-    const result = await tap(target.center.x, target.center.y, 'pixels', options);
+    const plan = resolveTapPoint(target, tree.all);
+
+    if (plan.occludedBy && args?.force !== true) {
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        `"${describeElement(target)}" is covered by "${describeElement(plan.occludedBy)}" at (${plan.point.x}, ${plan.point.y}) — tapping there would hit the overlay instead. Scroll the element clear, act on the overlay, or retry with force: true.`
+      );
+    }
+
+    const result = await tap(plan.point.x, plan.point.y, 'pixels', options);
     const uiContent = await uiSnapshot(options, false);
+    const note =
+      plan.strategy === 'offset'
+        ? ', offset from a covered center'
+        : plan.occludedBy
+          ? ', forced through an overlay'
+          : '';
 
     return {
       content: [
         textBlock(
-          `Tapped "${describeElement(target)}" at (${result.point.x}, ${result.point.y}) — matched on ${target.matchedOn}, ${matches.length} candidate(s)`
+          `Tapped "${describeElement(target)}" at (${result.point.x}, ${result.point.y}) — matched on ${target.matchedOn}, ${matches.length} candidate(s)${note}`
         ),
         ...uiContent,
       ],

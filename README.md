@@ -12,6 +12,7 @@ Both surfaces share one engine, so anything you can do as an MCP tool call you c
 ## Features
 
 - **UI automation that survives layout changes** — parse the accessibility tree, find elements by label/description/resource-id, and tap them by name instead of by coordinate
+- **Occlusion-aware taps** — the accessibility tree has no z-order, so an element under a bottom bar still claims those pixels; `ui tap` finds an uncovered point inside the target and refuses (instead of silently hitting the overlay) when there is none
 - **Normalized coordinates** — `0.5 0.7` means the same point on any screen size; raw pixels still work
 - **Input** — tap, double tap, long press, swipe, scroll, type, clear fields, and 40+ hardware/software keys
 - **Apps** — list, launch (with launcher-activity resolution), stop, restart, clear data, install/uninstall, inspect versions, grant/revoke runtime permissions

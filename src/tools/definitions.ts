@@ -121,7 +121,7 @@ export const toolDefinitions = [
   {
     name: 'ui_tap',
     description:
-      'Find an element by text/description/resource id and tap its center. Preferred over raw coordinates because it survives layout changes.',
+      'Find an element by text/description/resource id and tap it. Preferred over raw coordinates because it survives layout changes. Refuses to tap when the element is covered by an overlay or bottom bar, instead of silently hitting the thing on top.',
     inputSchema: objectSchema(
       {
         ...device,
@@ -129,6 +129,10 @@ export const toolDefinitions = [
         index: {
           type: 'number',
           description: 'Which match to tap when several are found (0 = best match, the default)',
+        },
+        force: {
+          type: 'boolean',
+          description: 'Tap even when the element is covered by another clickable element',
         },
       },
       ['query']

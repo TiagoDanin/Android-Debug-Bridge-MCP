@@ -47,8 +47,8 @@ adb-agent ui tap "Sign in"
 ```
 
 `ui tap` re-reads the screen, ranks matches against text, content-description
-and resource-id, and taps the center of the best one. It survives layout and
-resolution changes in a way fixed coordinates do not.
+and resource-id, and taps the best one. It survives layout and resolution
+changes in a way fixed coordinates do not.
 
 **2. Coordinates are fractions by default.** `input tap 0.5 0.7` taps the middle
 of the lower half on any screen size. Values above 1 are pixels. Force either
@@ -190,6 +190,10 @@ adb-agent app current
   `-d <serial>` or export `ADB_SERIAL`.
 - **A dumped tree is a snapshot.** Animations and async loads invalidate it, so
   prefer `ui wait <query>` over `wait 3000` before acting on a fresh screen.
+- **The tree has no z-order.** Bounds overlap freely and nothing says which
+  element is on top. `ui tap` compensates, but a raw `input tap` on coordinates
+  read out of a dump does not — check for a bottom bar or FAB over the point
+  before trusting it.
 - **WebViews expose little.** Inside a WebView the accessibility tree is often
   a single node. Fall back to normalized coordinates read off a screenshot.
 - **`app clear` is destructive** — it wipes accounts, databases and caches. Use

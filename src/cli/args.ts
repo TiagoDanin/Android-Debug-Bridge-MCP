@@ -25,6 +25,7 @@ const BOOLEAN_FLAGS = new Set([
   'normalized',
   'clickable',
   'exact',
+  'force',
   'submit',
   'reinstall',
   'grant',

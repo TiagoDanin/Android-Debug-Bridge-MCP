@@ -44,6 +44,13 @@ Read, act, verify:
 resource-id, prefers clickable and enabled elements, and taps the best one.
 Fixed coordinates break on a different device; labels usually do not.
 
+`ui_tap` also refuses to tap through an overlay. The tree reports full logical
+bounds with no notion of what is painted on top, so a banner under a bottom bar
+still claims those pixels — tapping its center fires the bar and reports
+success for the wrong element. The tool looks for an uncovered point inside the
+element first, and errors with the name of the blocker when there is none. Pass
+`force: true` to override once you know what is on top.
+
 Every input tool (`input_tap`, `input_text`, `input_scroll`, `input_keyevent`,
 `ui_tap`, …) already appends a fresh UI snapshot to its result, so you normally
 do not need a separate dump after acting. Set `ADB_AUTO_UI=false` in the server
@@ -116,6 +123,9 @@ and are also returned inline as an image.
   Use `restart_app` when you only want a clean process.
 - **A dump is a snapshot.** Prefer `ui_wait_for` over sleeping when a screen is
   still loading or animating.
+- **The tree has no z-order.** `ui_tap` compensates, but coordinates you read
+  out of a dump and feed to `input_tap` are unguarded — check whether a bottom
+  bar or FAB sits over the point first.
 - **WebViews expose almost nothing** to the accessibility tree. Fall back to
   `capture_screenshot` plus normalized `input_tap` coordinates.
 - **Multiple devices are not guessed.** Tools fail with the list of serials;
