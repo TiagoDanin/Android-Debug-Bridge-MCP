@@ -1,2 +1,16 @@
-node_modules
-dist
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# production
+/dist
+
+# yarn
+.yarnrc.yml
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
