@@ -1,10 +1,11 @@
 {
   "name": "android-debug-bridge-mcp",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "MCP plugin to control Android devices via ADB for automation, testing, and agent integration",
   "main": "dist/index.js",
   "files": [
-    "dist/"
+    "dist/",
+    "skills/"
   ],
   "repository": {
     "type": "git",
@@ -18,9 +19,10 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
+    "cli": "node dist/cli/index.js",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["mcp", "adb", "android", "device-control", "model-context-protocol", "claude", "ai", "automation"],
+  "keywords": ["mcp", "adb", "android", "device-control", "model-context-protocol", "claude", "ai", "automation", "cli", "agent-skills", "emulator", "ui-automation"],
   "author": "",
   "license": "MIT",
   "dependencies": {
@@ -34,6 +36,7 @@
   },
   "bin": {
     "adb-mcp": "./dist/index.js",
-    "android-debug-bridge-mcp": "./dist/index.js"
+    "android-debug-bridge-mcp": "./dist/index.js",
+    "adb-agent": "./dist/cli/index.js"
   }
 }
