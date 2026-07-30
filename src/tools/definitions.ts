@@ -129,4 +129,134 @@ export const toolDefinitions = [
       required: ['direction'],
     },
   },
+  {
+    name: 'list_devices',
+    description: 'List connected ADB devices',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'connect_device',
+    description: 'Connect to a specific ADB device via IP address and port',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        address: {
+          type: 'string',
+          description: 'Device address in the format host:port (e.g., 192.168.1.100:5555)',
+        },
+      },
+      required: ['address'],
+    },
+  },
+  {
+    name: 'get_current_activity',
+    description: 'Get the current resumed activity on the device',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'get_focused_window',
+    description: 'Get the current focused window on the device',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'list_processes',
+    description: 'List running processes on the device',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'get_memory_usage',
+    description: 'Get memory usage of a specific application',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        package_name: {
+          type: 'string',
+          description: 'Package name of the app (e.g., com.android.chrome)',
+        },
+      },
+      required: ['package_name'],
+    },
+  },
+  {
+    name: 'toggle_wifi',
+    description: 'Enable or disable Wi-Fi on the device',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        enabled: {
+          type: 'boolean',
+          description: 'true to enable Wi-Fi, false to disable',
+        },
+      },
+      required: ['enabled'],
+    },
+  },
+  {
+    name: 'toggle_mobile_data',
+    description: 'Enable or disable mobile data on the device',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        enabled: {
+          type: 'boolean',
+          description: 'true to enable mobile data, false to disable',
+        },
+      },
+      required: ['enabled'],
+    },
+  },
+  {
+    name: 'install_apk',
+    description: 'Install an APK on the device',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        apk_path: {
+          type: 'string',
+          description: 'Path to the APK file to install',
+        },
+      },
+      required: ['apk_path'],
+    },
+  },
+  {
+    name: 'reinstall_apk',
+    description: 'Reinstall (replace) an existing APK on the device',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        apk_path: {
+          type: 'string',
+          description: 'Path to the APK file to reinstall',
+        },
+      },
+      required: ['apk_path'],
+    },
+  },
+  {
+    name: 'uninstall_app',
+    description: 'Uninstall an application from the device',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        package_name: {
+          type: 'string',
+          description: 'Package name of the app to uninstall (e.g., com.example.app)',
+        },
+      },
+      required: ['package_name'],
+    },
+  },
 ];

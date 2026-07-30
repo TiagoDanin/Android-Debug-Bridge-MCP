@@ -206,23 +206,23 @@ export const toolHandlers = {
 
   input_scroll: async (args: any) => {
     const { direction } = args as { direction: string };
-    
+
     const scrollCommands = {
       up: 'adb shell input swipe 500 800 500 400',
       down: 'adb shell input swipe 500 400 500 800',
       left: 'adb shell input swipe 800 500 400 500',
       right: 'adb shell input swipe 400 500 800 500',
     };
-    
+
     const command = scrollCommands[direction as keyof typeof scrollCommands];
     if (!command) {
       throw new McpError(ErrorCode.InvalidParams, `Invalid direction: ${direction}`);
     }
-    
+
     await executeCommand(command);
-    
+
     const uiContent = await captureUIContent(false);
-    
+
     return {
       content: [
         {
@@ -230,6 +230,162 @@ export const toolHandlers = {
           text: `Scroll executed: ${direction}`,
         },
         ...uiContent,
+      ],
+    };
+  },
+
+  list_devices: async (_args: any) => {
+    const result = await executeCommand('adb devices -l');
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result || 'No devices found',
+        },
+      ],
+    };
+  },
+
+  connect_device: async (args: any) => {
+    const { address } = args as { address: string };
+    const result = await executeCommand(`adb connect ${address}`);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result,
+        },
+      ],
+    };
+  },
+
+  get_current_activity: async (_args: any) => {
+    const result = await executeCommand(
+      'adb shell dumpsys activity activities | grep mResumedActivity'
+    );
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result.trim() || 'No resumed activity found',
+        },
+      ],
+    };
+  },
+
+  get_focused_window: async (_args: any) => {
+    const result = await executeCommand(
+      'adb shell dumpsys window windows | grep mCurrentFocus'
+    );
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result.trim() || 'No focused window found',
+        },
+      ],
+    };
+  },
+
+  list_processes: async (_args: any) => {
+    const result = await executeCommand('adb shell ps');
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result,
+        },
+      ],
+    };
+  },
+
+  get_memory_usage: async (args: any) => {
+    const { package_name } = args as { package_name: string };
+    const result = await executeCommand(`adb shell dumpsys meminfo ${package_name}`);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result || `No memory info found for ${package_name}`,
+        },
+      ],
+    };
+  },
+
+  toggle_wifi: async (args: any) => {
+    const { enabled } = args as { enabled: boolean };
+    const action = enabled ? 'enable' : 'disable';
+    await executeCommand(`adb shell svc wifi ${action}`);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Wi-Fi ${enabled ? 'enabled' : 'disabled'}`,
+        },
+      ],
+    };
+  },
+
+  toggle_mobile_data: async (args: any) => {
+    const { enabled } = args as { enabled: boolean };
+    const action = enabled ? 'enable' : 'disable';
+    await executeCommand(`adb shell svc data ${action}`);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Mobile data ${enabled ? 'enabled' : 'disabled'}`,
+        },
+      ],
+    };
+  },
+
+  install_apk: async (args: any) => {
+    const { apk_path } = args as { apk_path: string };
+    const result = await executeCommand(`adb install "${apk_path}"`);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result,
+        },
+      ],
+    };
+  },
+
+  reinstall_apk: async (args: any) => {
+    const { apk_path } = args as { apk_path: string };
+    const result = await executeCommand(`adb install -r "${apk_path}"`);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result,
+        },
+      ],
+    };
+  },
+
+  uninstall_app: async (args: any) => {
+    const { package_name } = args as { package_name: string };
+    const result = await executeCommand(`adb uninstall ${package_name}`);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result,
+        },
       ],
     };
   },
