@@ -77,12 +77,40 @@ environment to turn that off when the extra output is not worth the tokens.
 `screen_state`, `wake_screen`, `sleep_screen`, `unlock_device`
 
 **System** — `toggle_wifi`, `toggle_mobile_data`, `toggle_airplane_mode`,
-`get_connectivity_state`, `read_logcat`, `clear_logcat`, `open_deeplink`,
-`send_broadcast`, `push_file`, `pull_file`, `get_setting`, `put_setting`,
-`list_processes`, `get_memory_usage`, `get_battery_info`, `list_notifications`,
-`get_device_props`, `adb_shell`
+`get_connectivity_state`, `set_touch_feedback`, `read_logcat`, `clear_logcat`,
+`open_deeplink`, `send_broadcast`, `push_file`, `pull_file`, `get_setting`,
+`put_setting`, `list_processes`, `get_memory_usage`, `get_battery_info`,
+`list_notifications`, `get_device_props`, `adb_shell`
+
+**Emulator console** — `emu_finger_touch`, `emu_finger_remove`, `emu_console`
+(emulators only — the virtual hardware an `adb shell` cannot reach)
 
 **Artifacts** — `create_test_folder`, `list_artifacts`
+
+## Showing where a tap landed
+
+Android draws its touch indicator only while the finger is down, so a
+screenshot taken after the action never contains it. `capture_screenshot`
+draws the marker itself instead:
+
+- `mark_last_touch: true` circles the gesture you just sent; `mark_last_count`
+  circles the last N, numbered in order.
+- `markers: [{x, y}]` circles arbitrary points — same 0..1-or-pixels reading as
+  every other coordinate — and a marker with `to` draws an arrow, for gestures.
+- `save_marked: true` also writes the annotated PNG beside the original as
+  `<name>.marked.png`. Without it the file on disk stays untouched and only the
+  returned image carries the marker.
+
+This is how to confirm a tap hit what you meant, or to show a human where a
+flow went wrong. `set_touch_feedback` toggles the device's own live indicator
+instead — useful for `record_screen`, useless for a still image.
+
+## Biometric prompts
+
+On an emulator, `emu_finger_touch` answers a fingerprint prompt (`finger_id`
+defaults to 1, and it must already be enrolled in Settings → Security).
+`emu_console` sends any other console command — `geo fix`, `sms send`,
+`power capacity`. Both fail with a clear message on a physical device.
 
 ## Coordinates
 
@@ -136,6 +164,8 @@ as small text; the default is enough to see layout, state and labels.
   `capture_screenshot` plus normalized `input_tap` coordinates.
 - **Multiple devices are not guessed.** Tools fail with the list of candidates;
   pass `device` explicitly — the serial, a prefix of it, or the model name.
+- **`set_touch_feedback` is invisible in screenshots.** It is drawn only while
+  the finger is down; use `capture_screenshot` with `mark_last_touch` instead.
 - **`adb_shell` is the escape hatch.** Use a dedicated tool when one exists —
   the dedicated tools parse output into structured data, `adb_shell` does not.
 

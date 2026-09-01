@@ -18,6 +18,8 @@ Both surfaces share one engine, so anything you can do as an MCP tool call you c
 - **Apps** — list, launch (with launcher-activity resolution), stop, restart, clear data, install/uninstall, inspect versions, grant/revoke runtime permissions
 - **Screen** — screenshots to disk and base64, screen recording, rotation, wake/sleep, PIN unlock
 - **Compressed screenshots** — the full-resolution PNG goes to disk, the caller gets a downscaled copy: ~90% fewer bytes across the wire, which on an MCP client is the difference between a screenshot costing a few hundred tokens and costing a few hundred thousand
+- **Marked screenshots** — a ring where the tap landed, drawn on the returned image: Android's own touch indicator exists only while the finger is down, so a screenshot taken afterwards never shows it
+- **Emulator console** — `emu finger touch` answers a fingerprint prompt on an AVD, and `emu send` reaches the rest of the virtual hardware
 - **System** — Wi-Fi/data/airplane toggles, logcat with package and priority filters, deeplinks, broadcasts, file push/pull, settings read/write, props, processes, memory, battery, notifications
 - **Devices** — list, TCP/IP connect, wait-for-boot, reboot, and multi-device targeting by serial, serial prefix, transport id or model name
 - **Test artifacts** — per-run folders with numbered screenshots
@@ -101,6 +103,52 @@ adb-agent screen shot --test login --step 001_home
 `--max-width`, `--quality` and `--format auto|jpeg|webp|png|none` override the
 defaults per call, `--no-compress` returns the original bytes, and
 `--save-compressed` also writes the small copy next to the PNG.
+
+### Marking where a tap landed
+
+Android draws its touch indicator only while the finger is down, so a
+screenshot taken after the action never contains it. `--mark-tap` draws the
+marker instead:
+
+```bash
+adb-agent input tap 0.5 0.35
+adb-agent screen shot --out step.png --mark-tap --save-marked
+# step.png (342217 bytes, 1080x2400)
+# step.marked.png
+# marked (540, 840)
+```
+
+`--mark-last <n>` circles the last N gestures, numbered in order, and
+`--mark <x,y>` (repeatable) circles arbitrary points; swipes and scrolls get an
+arrow along the gesture. The gesture history is shared between commands, so the
+tap and the screenshot do not have to run in the same process.
+
+`--mark-tap` draws the newest gesture in the history, with no notion of whether
+the screen moved on since: on a capture taken after a click that navigated, the
+ring lands on the destination screen at a point nobody touched. Mark the screen
+that received the touch and leave the destination capture clean.
+
+The PNG on disk stays untouched — only the returned image carries the marker,
+plus a `<name>.marked.png` sibling when `--save-marked` is passed.
+
+For a recording, turn on the device's live indicator instead:
+
+```bash
+adb-agent input touches on      # --pointer also enables the crosshair overlay
+adb-agent screen record 10 --out flow.mp4
+adb-agent input touches off
+```
+
+### Emulator console
+
+```bash
+adb-agent emu finger touch 1                 # answer a fingerprint prompt
+adb-agent emu finger remove
+adb-agent emu send geo fix -46.63 -23.55     # any other console command
+```
+
+The finger id must already be enrolled on the AVD (Settings → Security), and
+the whole group refuses to run against a physical device, which has no console.
 
 ### Chaining
 
@@ -186,9 +234,11 @@ Settings → Extensions → MCP → add a server with command `npx` and args `["
 
 ### Tools
 
-58 tools grouped by area — devices, UI, input, apps, screen, system, artifacts. Every device-facing tool takes an optional `device` (serial, prefix, transport id or model); `list_devices` shows what is connected and which one is the default target. Input tools append a fresh UI snapshot to their result so the agent sees the new screen without a second call (disable with `ADB_AUTO_UI=false`).
+62 tools grouped by area — devices, UI, input, apps, screen, system, emulator console, artifacts. Every device-facing tool takes an optional `device` (serial, prefix, transport id or model); `list_devices` shows what is connected and which one is the default target. Input tools append a fresh UI snapshot to their result so the agent sees the new screen without a second call (disable with `ADB_AUTO_UI=false`).
 
-`capture_screenshot` returns the compressed image and accepts `max_width`, `quality`, `format` and `save_compressed` when a call needs more (or less) detail than the defaults.
+`capture_screenshot` returns the compressed image and accepts `max_width`, `quality`, `format` and `save_compressed` when a call needs more (or less) detail than the defaults. It also draws markers: `mark_last_touch` circles the gesture just sent, `mark_last_count` the last N, and `markers` any point you name.
+
+`emu_finger_touch`, `emu_finger_remove` and `emu_console` drive the emulator console; `set_touch_feedback` toggles the device's own touch indicator for recordings.
 
 See [`skills/adb-mcp/SKILL.md`](./skills/adb-mcp/SKILL.md) for the full list and the recommended flow.
 
@@ -218,11 +268,15 @@ See [`skills/README.md`](./skills/README.md) for details.
 | `ADB_SERIAL` | Default device — serial, prefix or model (also honours `ANDROID_SERIAL`) |
 | `ADB_DEVICE_CACHE_MS` | How long the device list is cached, in ms (default 3000, `0` disables) |
 | `ADB_SETTLE_MS` | Delay after UI-mutating actions in ms (default 300) |
+| `ADB_BATCH_DELAY_MS` | Pause after each batch action in ms (default 300, `--delay` overrides) |
 | `ADB_ARTIFACT_DIR` | Where screenshots and recordings are written (default cwd) |
 | `ADB_FALLBACK_CWD` | Directory to move to when the working directory is unusable |
 | `ADB_SCREENSHOT_MAX_WIDTH` | Width of the returned screenshot (default 720, `0` keeps the original) |
 | `ADB_SCREENSHOT_QUALITY` | Lossy quality 1..100 for jpeg/webp (default 60) |
 | `ADB_SCREENSHOT_FORMAT` | `auto`, `jpeg`, `webp`, `png` or `none` (default `auto`) |
+| `ADB_MARKER_COLOR` | Colour of the screenshot markers as hex (default `#ff2d55`) |
+| `ADB_TOUCH_HISTORY` | Set to `off` to keep the gesture history in memory only |
+| `ADB_TOUCH_HISTORY_FILE` | Where the gesture history is stored (default: temp folder) |
 | `ADB_AUTO_UI` | Set to `false` to stop MCP input tools appending a UI snapshot |
 | `ADB_SKILLS_DIR` | Override the folder holding the `SKILL.md` files |
 

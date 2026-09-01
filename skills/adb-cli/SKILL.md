@@ -67,10 +67,11 @@ full serial, a serial prefix, a transport id or a model name, so
 |-------|----------------|
 | `device` | `list`, `info`, `connect`, `disconnect`, `wait`, `reboot` |
 | `ui` | `dump`, `find`, `tap`, `wait` |
-| `input` | `tap`, `double-tap`, `long-press`, `swipe`, `scroll`, `text`, `key`, `keys`, `clear` |
+| `input` | `tap`, `double-tap`, `long-press`, `swipe`, `scroll`, `text`, `key`, `keys`, `clear`, `touches` |
 | `app` | `list`, `launch`, `stop`, `restart`, `clear`, `info`, `install`, `uninstall`, `grant`, `revoke`, `current` |
 | `screen` | `shot`, `record`, `rotate`, `state`, `wake`, `sleep`, `unlock` |
 | `system` | `wifi`, `data`, `airplane`, `connectivity`, `logcat`, `clear-logcat`, `deeplink`, `broadcast`, `push`, `pull`, `setting`, `props`, `processes`, `memory`, `battery`, `notifications`, `shell` |
+| `emu` | `finger`, `send` — the emulator console, emulators only |
 | `test` | `folder`, `artifacts` |
 | `skills` | `list`, `get` |
 | `doctor` | one-shot environment check |
@@ -91,7 +92,10 @@ adb-agent app restart com.example.app \
 ```
 
 **`batch`** — one process, one report, same stop-on-first-failure semantics.
-`wait <ms>` is available as a step for pauses:
+It paces itself the way an agent works, print → action → print: 300ms after
+every action, before the next step looks at the screen (`--delay <ms>`,
+`--delay 0` to run flat out). Reads wait for nothing. `wait <ms>` is available
+as a step for a longer, explicit pause, and replaces the automatic one:
 
 ```bash
 adb-agent batch \
@@ -109,6 +113,19 @@ With `--json`, batch returns one envelope containing every step:
 
 ```json
 {"ok":true,"command":"batch","summary":"7/7 steps succeeded","data":{"steps":[…],"failed":0}}
+```
+
+The delay is what keeps a step from reading a half-drawn screen: an action
+returns as soon as adb does, which on a tap that navigates is well before the
+next screen exists. It covers the screen transition — not a screen that loads
+over the network, which still shows its skeleton after 300ms. Raise it for a
+slow app (`--delay 1000`), or better, wait for the content itself:
+
+```bash
+# brittle: hopes 1500ms is enough
+adb-agent batch "ui tap Extrato" "wait 1500" "screen shot --mark-tap"
+# robust: proceeds the moment the screen actually has data
+adb-agent batch "ui tap Extrato" "ui wait 'Saldo atual'" "screen shot --mark-tap"
 ```
 
 Add `--continue-on-error` to run the remaining steps anyway and collect all the
@@ -177,6 +194,39 @@ through navigation:
 adb-agent system deeplink "myapp://checkout/cart" --package com.example.app
 ```
 
+**See where a tap actually landed.** The device only draws its own touch
+indicator while the finger is down, so a screenshot taken afterwards never
+shows it. `--mark-tap` circles the last gesture on the returned image instead,
+and `--save-marked` writes the annotated PNG next to the original:
+
+```bash
+adb-agent input tap 0.5 0.35
+adb-agent screen shot --out step.png --mark-tap --save-marked
+adb-agent screen shot --mark-last 3            # the last three gestures, numbered
+adb-agent screen shot --mark 0.5,0.7 --mark 120,900   # arbitrary points
+```
+
+Swipes and scrolls get an arrow along the gesture. The history survives between
+commands (a small JSON file in the temp folder), so the tap and the screenshot
+do not have to share a process.
+
+For a **recording**, turn on the device's own indicator instead — it is drawn
+live, so it shows up frame by frame:
+
+```bash
+adb-agent input touches on          # add --pointer for the crosshair overlay
+adb-agent screen record 10 --out flow.mp4
+adb-agent input touches off
+```
+
+**Answer a fingerprint prompt on an emulator:**
+
+```bash
+adb-agent emu finger touch 1        # finger id 1, already enrolled in Settings
+adb-agent emu finger remove
+adb-agent emu send geo fix -46.63 -23.55    # any other console command
+```
+
 **Check for crashes after an action:**
 
 ```bash
@@ -209,6 +259,17 @@ adb-agent app current
 - **`app clear` is destructive** — it wipes accounts, databases and caches. Use
   `app restart` when you only want a fresh process.
 - **`screen record` blocks** for the whole duration and caps at 180 seconds.
+- **`input touches` will not show up in a screenshot.** Android draws the
+  indicator only while the finger is down, and `screen shot` runs after the
+  gesture is over. It works in `screen record`; for a still image use
+  `screen shot --mark-tap`.
+- **`--mark-tap` marks the last gesture, not "the click on this screen".** It
+  draws whatever is newest in the history, so on a capture taken after a click
+  that navigated, the ring lands on the destination screen at a point nobody
+  touched. Mark the screen that received the touch (`--mark <x,y>` on the
+  capture before the tap) and leave the destination capture clean.
+- **`emu` needs an emulator.** The console does not exist on physical devices,
+  and `emu finger touch` only accepts a finger id already enrolled on the AVD.
 
 ## Environment
 
@@ -218,11 +279,15 @@ adb-agent app current
 | `ADB_SERIAL` | Default device for every command — serial, prefix or model |
 | `ADB_DEVICE_CACHE_MS` | How long the device list is cached (default 3000) |
 | `ADB_SETTLE_MS` | Delay after UI actions in ms (default 300) |
+| `ADB_BATCH_DELAY_MS` | Pause after each batch action in ms (default 300, `--delay` wins) |
 | `ADB_ARTIFACT_DIR` | Where screenshots/recordings are written (default cwd) |
 | `ADB_FALLBACK_CWD` | Directory to move to when the working directory is gone |
 | `ADB_SCREENSHOT_MAX_WIDTH` | Width of the returned screenshot (default 720, `0` = original) |
 | `ADB_SCREENSHOT_QUALITY` | Lossy quality 1..100 (default 60) |
 | `ADB_SCREENSHOT_FORMAT` | `auto`, `jpeg`, `webp`, `png` or `none` (default `auto`) |
+| `ADB_MARKER_COLOR` | Colour of the screenshot markers as hex (default `#ff2d55`) |
+| `ADB_TOUCH_HISTORY` | `off` keeps the gesture history in memory only |
+| `ADB_TOUCH_HISTORY_FILE` | Where the gesture history is stored (default: temp folder) |
 | `ADB_SKILLS_DIR` | Override the folder holding these SKILL.md files |
 
 ## Reading this file from the CLI
