@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { AdbOptions, adb, adbExecOut, adbShell, settle, shellQuote } from './adb.js';
-import { KEY_CODES } from './input.js';
+import { Marker, annotatePng } from './annotate.js';
+import { KEY_CODES, TouchEvent, recentTouches } from './input.js';
 import { ScreenSize, screenRotation, screenSize } from './device.js';
-import { clearScreenSizeCache } from './geometry.js';
+import { CoordinateMode, clearScreenSizeCache, resolvePoint } from './geometry.js';
 import { CompressOptions, CompressedImage, compressScreenshot } from './image.js';
 import { safeCwd } from '../utils/cwd.js';
 
@@ -19,6 +20,10 @@ export interface ScreenshotResult {
   bytes: number;
   /** Size of the PNG that came off the device. */
   originalBytes: number;
+  /** Markers drawn on the saved file and the returned image, in device pixels. */
+  markers: Marker[];
+  /** Why the markers were skipped, when they were. */
+  markerNote?: string;
   screen: ScreenSize;
   image: CompressedImage;
 }
@@ -28,6 +33,45 @@ export interface ScreenshotOptions extends CompressOptions {
   compress?: boolean;
   /** Also write the compressed copy next to the PNG. */
   saveCompressed?: boolean;
+  /** Points to circle on the returned image. */
+  markers?: Marker[];
+  /** How to read the coordinates in `markers` (default auto, like input). */
+  markerMode?: CoordinateMode;
+  /** Circle the last gesture — `true` for one, a number for the last N. */
+  markLastTouch?: boolean | number;
+  /** Ring colour override (hex). */
+  markerColor?: string;
+}
+
+/** Turn a recorded gesture into a marker, keeping the arrow when it moved. */
+function touchMarker(touch: TouchEvent): Marker {
+  return {
+    x: touch.x,
+    y: touch.y,
+    ...(touch.to && (touch.to.x !== touch.x || touch.to.y !== touch.y) ? { to: touch.to } : {}),
+  };
+}
+
+/** Resolve every requested marker to device pixels, gestures included. */
+function collectMarkers(options: AdbOptions, screenshotOptions: ScreenshotOptions): Marker[] {
+  const explicit = (screenshotOptions.markers ?? []).map((marker) => {
+    const point = resolvePoint(marker.x, marker.y, screenshotOptions.markerMode ?? 'auto', options);
+    const to = marker.to
+      ? resolvePoint(marker.to.x, marker.to.y, screenshotOptions.markerMode ?? 'auto', options)
+      : undefined;
+
+    return { ...marker, x: point.x, y: point.y, ...(to ? { to: { x: to.x, y: to.y } } : {}) };
+  });
+
+  const requested = screenshotOptions.markLastTouch;
+  const count = requested === true ? 1 : typeof requested === 'number' ? Math.round(requested) : 0;
+  const gestures = (count > 0 ? recentTouches(count, options) : []).map(touchMarker);
+  const markers = [...explicit, ...gestures];
+
+  // A single ring needs no caption; several do, in the order they happened.
+  return markers.length > 1
+    ? markers.map((marker, index) => ({ ...marker, label: marker.label ?? String(index + 1) }))
+    : markers;
 }
 
 export interface ScreenState {
@@ -70,12 +114,28 @@ export async function captureScreenshot(
     throw new Error('screencap returned no data — is the device screen on?');
   }
 
-  if (outPath) {
-    fs.mkdirSync(path.dirname(outPath), { recursive: true });
-    fs.writeFileSync(outPath, buffer);
+  const markers = collectMarkers(options, screenshotOptions);
+  let payload = buffer;
+  let markerNote: string | undefined;
+
+  // Markers are a debugging aid: never let one cost the caller the capture.
+  if (markers.length > 0) {
+    try {
+      payload = annotatePng(buffer, markers, { color: screenshotOptions.markerColor });
+    } catch (error) {
+      payload = buffer;
+      markerNote = `markers skipped: ${error instanceof Error ? error.message : error}`;
+    }
   }
 
-  const image = await compressScreenshot(buffer, {
+  // One capture, one file: asking for markers marks the file that is saved,
+  // rather than leaving a marked and an unmarked copy of the same moment.
+  if (outPath) {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, payload);
+  }
+
+  const image = await compressScreenshot(payload, {
     maxWidth: screenshotOptions.maxWidth,
     quality: screenshotOptions.quality,
     format: screenshotOptions.compress === false ? 'none' : screenshotOptions.format,
@@ -102,7 +162,74 @@ export async function captureScreenshot(
     mimeType: image.mimeType,
     bytes: image.bytes,
     originalBytes: buffer.length,
+    markers,
+    ...(markerNote ? { markerNote } : {}),
     screen: screenSize(options),
+    image,
+  };
+}
+
+export interface MarkResult {
+  /** File that was written — the source itself unless `outPath` was given. */
+  path: string;
+  /** Where the annotated image was read from. */
+  source: string;
+  markers: Marker[];
+  bytes: number;
+  base64: string;
+  mimeType: string;
+  image: CompressedImage;
+}
+
+/**
+ * Draw the gesture that came *after* a screenshot onto it.
+ *
+ * An agent works print → action → print: the click belongs to the print it was
+ * decided from, not to the one that follows it. A capture cannot know what will
+ * be tapped next, so the marking happens here, once the tap is in the history.
+ */
+export async function markScreenshot(
+  source: string,
+  outPath: string | null = null,
+  options: AdbOptions = {},
+  markOptions: ScreenshotOptions = {}
+): Promise<MarkResult> {
+  if (!fs.existsSync(source)) {
+    throw new Error(`screenshot not found: ${source}`);
+  }
+
+  const buffer = fs.readFileSync(source);
+
+  // Default to the gesture that just happened — the whole point of the command.
+  const requested =
+    markOptions.markLastTouch ?? (markOptions.markers?.length ? undefined : true);
+  const markers = collectMarkers(options, { ...markOptions, markLastTouch: requested });
+
+  if (markers.length === 0) {
+    throw new Error(
+      'nothing to mark: no gesture has been recorded on this device yet, and no explicit marker was given'
+    );
+  }
+
+  const annotated = annotatePng(buffer, markers, { color: markOptions.markerColor });
+  const target = outPath ?? source;
+
+  fs.mkdirSync(path.dirname(path.resolve(target)), { recursive: true });
+  fs.writeFileSync(target, annotated);
+
+  const image = await compressScreenshot(annotated, {
+    maxWidth: markOptions.maxWidth,
+    quality: markOptions.quality,
+    format: markOptions.compress === false ? 'none' : markOptions.format,
+  });
+
+  return {
+    path: target,
+    source,
+    markers,
+    bytes: fs.statSync(target).size,
+    base64: image.buffer.toString('base64'),
+    mimeType: image.mimeType,
     image,
   };
 }

@@ -374,8 +374,12 @@ function filterCost(row: Buffer): number {
   return total;
 }
 
-/** Encode RGBA pixels as a PNG, dropping the alpha channel when it is unused. */
-export function encodePng(image: RgbaImage): Buffer {
+/**
+ * Encode RGBA pixels as a PNG, dropping the alpha channel when it is unused.
+ * `compressionLevel` trades size for time — the annotator passes a lower one
+ * because its output gets re-encoded straight away.
+ */
+export function encodePng(image: RgbaImage, compressionLevel = 9): Buffer {
   const channels = image.hasAlpha ? 4 : 3;
   const stride = image.width * channels;
   const colorType = image.hasAlpha ? 6 : 2;
@@ -439,7 +443,7 @@ export function encodePng(image: RgbaImage): Buffer {
   return Buffer.concat([
     PNG_SIGNATURE,
     pngChunk('IHDR', header),
-    pngChunk('IDAT', zlib.deflateSync(filtered, { level: 9 })),
+    pngChunk('IDAT', zlib.deflateSync(filtered, { level: compressionLevel })),
     pngChunk('IEND', Buffer.alloc(0)),
   ]);
 }

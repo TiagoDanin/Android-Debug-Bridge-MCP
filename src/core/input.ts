@@ -1,4 +1,7 @@
-import { AdbOptions, adbShell, settle, shellQuote } from './adb.js';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { AdbOptions, adbShell, selectDevice, settle, shellQuote } from './adb.js';
 import { CoordinateMode, ResolvedPoint, cachedScreenSize, resolvePoint } from './geometry.js';
 
 export const KEY_CODES: Record<string, number> = {
@@ -38,6 +41,155 @@ export const KEY_CODES: Record<string, number> = {
   PASTE: 279,
 };
 
+export type TouchKind = 'tap' | 'double-tap' | 'long-press' | 'swipe' | 'scroll';
+
+export interface TouchEvent {
+  kind: TouchKind;
+  /** Where the gesture started, in device pixels. */
+  x: number;
+  y: number;
+  /** Where it ended, for swipes and scrolls. */
+  to?: { x: number; y: number };
+  durationMs?: number;
+  /** Serial the gesture was sent to, or `default` when it could not be read. */
+  device: string;
+  at: number;
+}
+
+const HISTORY_LIMIT = 50;
+const memory: TouchEvent[] = [];
+
+/**
+ * Gestures are also written to a small JSON file, because the CLI is a fresh
+ * process per command: without it `input tap` and `screen shot --mark-tap`
+ * would never see each other. Point it elsewhere with ADB_TOUCH_HISTORY_FILE,
+ * or turn it off with ADB_TOUCH_HISTORY=off.
+ */
+function historyFile(): string | null {
+  const mode = (process.env.ADB_TOUCH_HISTORY || '').toLowerCase();
+  if (mode === 'off' || mode === 'false' || mode === '0') return null;
+
+  return process.env.ADB_TOUCH_HISTORY_FILE || path.join(os.tmpdir(), 'adb-agent-touches.json');
+}
+
+function isTouchEvent(value: any): value is TouchEvent {
+  return (
+    value &&
+    typeof value.x === 'number' &&
+    typeof value.y === 'number' &&
+    typeof value.at === 'number' &&
+    typeof value.kind === 'string' &&
+    typeof value.device === 'string'
+  );
+}
+
+function readStoredHistory(): TouchEvent[] {
+  const file = historyFile();
+  if (!file) return [];
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(parsed) ? parsed.filter(isTouchEvent) : [];
+  } catch {
+    // No file yet, or someone else is mid-write: an empty history is fine.
+    return [];
+  }
+}
+
+/**
+ * This process and every earlier one, oldest first and de-duplicated. The
+ * in-memory copy comes first so a retagged gesture wins over the version that
+ * was already written to disk.
+ */
+function mergedHistory(): TouchEvent[] {
+  const seen = new Set<string>();
+
+  return [...memory, ...readStoredHistory()]
+    .filter((entry) => {
+      const key = `${entry.at}:${entry.device}:${entry.x}:${entry.y}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => left.at - right.at)
+    .slice(-HISTORY_LIMIT);
+}
+
+function persistHistory(): void {
+  const file = historyFile();
+  if (!file) return;
+
+  try {
+    fs.writeFileSync(file, JSON.stringify(mergedHistory()));
+  } catch {
+    // A read-only temp dir costs the cross-process history, not the gesture.
+  }
+}
+
+/**
+ * Which device a gesture belongs to. `selectDevice` is backed by the device
+ * cache, so this costs nothing on the tap path — and the gesture has already
+ * been sent by the time it runs, so a failure here is never fatal.
+ */
+function touchDeviceKey(options: AdbOptions): string {
+  try {
+    return selectDevice(options.device)?.serial ?? 'default';
+  } catch {
+    return options.device ?? 'default';
+  }
+}
+
+/**
+ * Remember a gesture so a later screenshot can point at it. The device draws
+ * its own indicator only while the finger is down, which a screenshot taken
+ * afterwards always misses.
+ */
+function recordTouch(event: Omit<TouchEvent, 'at' | 'device'>, options: AdbOptions): TouchEvent {
+  const entry: TouchEvent = { ...event, device: touchDeviceKey(options), at: Date.now() };
+
+  memory.push(entry);
+  if (memory.length > HISTORY_LIMIT) memory.shift();
+  persistHistory();
+
+  return entry;
+}
+
+/** Relabel the gesture just recorded — `scroll` is a swipe under the hood. */
+function retagLastTouch(kind: TouchKind): void {
+  const entry = memory[memory.length - 1];
+  if (!entry) return;
+
+  entry.kind = kind;
+  persistHistory();
+}
+
+/** The most recent gestures on a device, oldest first. */
+export function recentTouches(limit = 1, options: AdbOptions = {}): TouchEvent[] {
+  const key = touchDeviceKey(options);
+  const history = mergedHistory();
+  const scoped = key === 'default' ? history : history.filter((entry) => entry.device === key);
+
+  return scoped.slice(-Math.max(Math.round(limit), 0));
+}
+
+/** The last gesture sent to a device, if any. */
+export function lastTouch(options: AdbOptions = {}): TouchEvent | null {
+  return recentTouches(1, options)[0] ?? null;
+}
+
+export function clearTouchHistory(): void {
+  memory.length = 0;
+
+  const file = historyFile();
+  if (!file) return;
+
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // Nothing to clean up.
+  }
+}
+
 export type ScrollDirection = 'up' | 'down' | 'left' | 'right';
 
 export interface TapResult {
@@ -58,6 +210,7 @@ export async function tap(
 ): Promise<TapResult> {
   const point = resolvePoint(x, y, mode, options);
   adbShell(`input tap ${point.x} ${point.y}`, options);
+  recordTouch({ kind: 'tap', x: point.x, y: point.y }, options);
   await settle();
   return { point };
 }
@@ -71,6 +224,7 @@ export async function doubleTap(
   const point = resolvePoint(x, y, mode, options);
   adbShell(`input tap ${point.x} ${point.y}`, options);
   adbShell(`input tap ${point.x} ${point.y}`, options);
+  recordTouch({ kind: 'double-tap', x: point.x, y: point.y }, options);
   await settle();
   return { point };
 }
@@ -84,6 +238,7 @@ export async function longPress(
 ): Promise<SwipeResult> {
   const point = resolvePoint(x, y, mode, options);
   adbShell(`input swipe ${point.x} ${point.y} ${point.x} ${point.y} ${durationMs}`, options);
+  recordTouch({ kind: 'long-press', x: point.x, y: point.y, durationMs }, options);
   await settle();
   return { from: point, to: point, durationMs };
 }
@@ -100,6 +255,10 @@ export async function swipe(
   const from = resolvePoint(x1, y1, mode, options);
   const to = resolvePoint(x2, y2, mode, options);
   adbShell(`input swipe ${from.x} ${from.y} ${to.x} ${to.y} ${durationMs}`, options);
+  recordTouch(
+    { kind: 'swipe', x: from.x, y: from.y, to: { x: to.x, y: to.y }, durationMs },
+    options
+  );
   await settle();
   return { from, to, durationMs };
 }
@@ -132,7 +291,10 @@ export async function scroll(
     throw new Error(`Invalid scroll direction: ${direction}. Use up, down, left or right.`);
   }
 
-  return swipe(vector[0], vector[1], vector[2], vector[3], durationMs, 'pixels', options);
+  const result = await swipe(vector[0], vector[1], vector[2], vector[3], durationMs, 'pixels', options);
+  retagLastTouch('scroll');
+
+  return result;
 }
 
 /**

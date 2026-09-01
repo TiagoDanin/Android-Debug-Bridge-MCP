@@ -67,6 +67,60 @@ export function connectivityState(options: AdbOptions = {}): {
   };
 }
 
+export interface TouchFeedback {
+  /** Android's own "Show taps" — a circle under the finger while it is down. */
+  showTouches: boolean | null;
+  /** "Pointer location" — the developer overlay with crosshairs and readouts. */
+  pointerLocation: boolean | null;
+}
+
+function readFlag(key: string, options: AdbOptions): boolean | null {
+  try {
+    const value = adbShell(`settings get system ${shellQuote(key)}`, options).trim();
+    if (value === '1') return true;
+    if (value === '0' || value === 'null' || value === '') return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read the developer touch overlays without changing them. */
+export function touchFeedbackState(options: AdbOptions = {}): TouchFeedback {
+  return {
+    showTouches: readFlag('show_touches', options),
+    pointerLocation: readFlag('pointer_location', options),
+  };
+}
+
+/**
+ * Toggle the on-device touch indicators.
+ *
+ * These are drawn by the system while the finger is down, so they show up in
+ * `screen record` but almost never in a screenshot taken after the tap —
+ * for a still image, capture with the screenshot markers instead.
+ */
+export async function setTouchFeedback(
+  settings: { showTouches?: boolean; pointerLocation?: boolean },
+  options: AdbOptions = {}
+): Promise<TouchFeedback & { changed: string[] }> {
+  const changed: string[] = [];
+
+  if (settings.showTouches !== undefined) {
+    adbShell(`settings put system show_touches ${settings.showTouches ? 1 : 0}`, options);
+    changed.push(`show_touches=${settings.showTouches ? 1 : 0}`);
+  }
+
+  if (settings.pointerLocation !== undefined) {
+    adbShell(`settings put system pointer_location ${settings.pointerLocation ? 1 : 0}`, options);
+    changed.push(`pointer_location=${settings.pointerLocation ? 1 : 0}`);
+  }
+
+  if (changed.length > 0) await settle();
+
+  return { ...touchFeedbackState(options), changed };
+}
+
 /** Read the logcat buffer. Returns the tail of the log as text. */
 export function readLogcat(logOptions: LogcatOptions = {}, options: AdbOptions = {}): string {
   if (logOptions.clear) {
