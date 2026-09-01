@@ -1,5 +1,6 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { AdbOptions, cachedDevices, describeDevice } from '../core/adb.js';
+import { describeBatch, runBatch } from '../core/batch.js';
 import {
   appInfo,
   clearAppData,
@@ -14,7 +15,11 @@ import {
   stopApp,
   uninstallApp,
 } from '../core/app.js';
+import { Marker } from '../core/annotate.js';
+import { sleep } from '../utils/sleep.js';
+import { mutatingTools } from './definitions.js';
 import { createTestFolder, listArtifacts } from '../core/artifacts.js';
+import { emuConsole, fingerRemove, fingerTouch } from '../core/emulator.js';
 import {
   connectDevice,
   defaultDevice,
@@ -38,6 +43,7 @@ import {
 } from '../core/input.js';
 import {
   captureScreenshot,
+  markScreenshot,
   recordScreen,
   rotateScreen,
   screenState,
@@ -63,6 +69,8 @@ import {
   readLogcat,
   sendBroadcast,
   setToggle,
+  setTouchFeedback,
+  touchFeedbackState,
 } from '../core/system.js';
 import {
   FindQuery,
@@ -524,17 +532,33 @@ export const toolHandlers = {
 
   // ─── Screen ─────────────────────────────────────────────────────────────────
   capture_screenshot: async (args: any) => {
-    const { test_name, step_name, out_path, include_image, max_width, quality, format, save_compressed } =
-      args as {
-        test_name?: string;
-        step_name?: string;
-        out_path?: string;
-        include_image?: boolean;
-        max_width?: number;
-        quality?: number;
-        format?: ImageFormat;
-        save_compressed?: boolean;
-      };
+    const {
+      test_name,
+      step_name,
+      out_path,
+      include_image,
+      max_width,
+      quality,
+      format,
+      save_compressed,
+      mark_last_touch,
+      mark_last_count,
+      markers,
+      marker_color,
+    } = args as {
+      test_name?: string;
+      step_name?: string;
+      out_path?: string;
+      include_image?: boolean;
+      max_width?: number;
+      quality?: number;
+      format?: ImageFormat;
+      save_compressed?: boolean;
+      mark_last_touch?: boolean;
+      mark_last_count?: number;
+      markers?: Marker[];
+      marker_color?: string;
+    };
 
     const target = out_path ?? screenshotPath(test_name, step_name);
     const result = await captureScreenshot(target, adbOptions(args), {
@@ -542,16 +566,31 @@ export const toolHandlers = {
       quality,
       format,
       saveCompressed: save_compressed,
+      markers,
+      markLastTouch: mark_last_count ?? mark_last_touch,
+      markerColor: marker_color,
     });
 
     const where = result.path
       ? `Screenshot captured: ${result.path}`
       : 'Screenshot captured in memory';
     const saved = result.compressedPath ? `\nCompressed copy: ${result.compressedPath}` : '';
+    const points = result.markers
+      .map(
+        (marker) =>
+          `(${marker.x}, ${marker.y})${marker.to ? ` → (${marker.to.x}, ${marker.to.y})` : ''}`
+      )
+      .join(', ');
+    const marked = result.markers.length
+      ? `\nMarked ${result.markers.length} point(s): ${points}`
+      : mark_last_touch || mark_last_count
+        ? '\nNothing marked: no gesture has been recorded on this device yet'
+        : '';
+    const markerIssue = result.markerNote ? `\n${result.markerNote}` : '';
 
     const content: Content = [
       textBlock(
-        `${where} — screen ${result.screen.width}x${result.screen.height}\nReturned: ${describeCompression(result.image)}${saved}`
+        `${where} — screen ${result.screen.width}x${result.screen.height}\nReturned: ${describeCompression(result.image)}${saved}${marked}${markerIssue}`
       ),
     ];
 
@@ -560,6 +599,44 @@ export const toolHandlers = {
     }
 
     return { content };
+  },
+
+  mark_screenshot: async (args: any) => {
+    const { file_path, out_path, mark_last_count, markers, marker_color, include_image } = args as {
+      file_path: string;
+      out_path?: string;
+      mark_last_count?: number;
+      markers?: Marker[];
+      marker_color?: string;
+      include_image?: boolean;
+    };
+
+    try {
+      const result = await markScreenshot(file_path, out_path ?? null, adbOptions(args), {
+        markers,
+        ...(mark_last_count === undefined ? {} : { markLastTouch: mark_last_count }),
+        markerColor: marker_color,
+      });
+
+      const points = result.markers
+        .map(
+          (marker) =>
+            `(${marker.x}, ${marker.y})${marker.to ? ` → (${marker.to.x}, ${marker.to.y})` : ''}`
+        )
+        .join(', ');
+
+      const content: Content = [
+        textBlock(`Marked ${result.path} at ${points} — ${describeCompression(result.image)}`),
+      ];
+
+      if (include_image !== false) {
+        content.push({ type: 'image', data: result.base64, mimeType: result.mimeType });
+      }
+
+      return { content };
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidRequest, error instanceof Error ? error.message : String(error));
+    }
   },
 
   record_screen: async (args: any) => {
@@ -621,6 +698,34 @@ export const toolHandlers = {
   toggle_airplane_mode: async (args: any) => {
     const { enabled } = args as { enabled: boolean };
     return textResult(await setToggle('airplane', enabled, adbOptions(args)));
+  },
+
+  set_touch_feedback: async (args: any) => {
+    const options = adbOptions(args);
+    const { show_touches, pointer_location } = args as {
+      show_touches?: boolean;
+      pointer_location?: boolean;
+    };
+
+    const describe = (value: boolean | null) => (value === null ? 'unknown' : value ? 'on' : 'off');
+
+    if (show_touches === undefined && pointer_location === undefined) {
+      const state = touchFeedbackState(options);
+      return dataResult(
+        `Show taps: ${describe(state.showTouches)} | Pointer location: ${describe(state.pointerLocation)}`,
+        state
+      );
+    }
+
+    const state = await setTouchFeedback(
+      { showTouches: show_touches, pointerLocation: pointer_location },
+      options
+    );
+
+    return dataResult(
+      `Show taps: ${describe(state.showTouches)} | Pointer location: ${describe(state.pointerLocation)}\nThe indicator only exists while the finger is down, so it shows up in record_screen but not in a screenshot taken afterwards — use capture_screenshot with mark_last_touch for a still image.`,
+      state
+    );
   },
 
   get_connectivity_state: async (args: any) => {
@@ -722,6 +827,130 @@ export const toolHandlers = {
     const { command } = args as { command: string };
     const output = rawShell(command, adbOptions(args));
     return textResult(output || '(no output)');
+  },
+
+  // ─── Emulator console ───────────────────────────────────────────────────────
+  emu_finger_touch: async (args: any) => {
+    const { finger_id } = args as { finger_id?: number };
+
+    try {
+      const result = await fingerTouch(finger_id ?? 1, adbOptions(args));
+      return dataResult(
+        `Fingerprint sensor touched with finger ${result.fingerId} on ${result.serial}${result.output ? ` — ${result.output}` : ''}`,
+        result
+      );
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidRequest, error instanceof Error ? error.message : String(error));
+    }
+  },
+
+  emu_finger_remove: async (args: any) => {
+    try {
+      const result = await fingerRemove(adbOptions(args));
+      return dataResult(`Finger lifted off the sensor on ${result.serial}`, result);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidRequest, error instanceof Error ? error.message : String(error));
+    }
+  },
+
+  emu_console: async (args: any) => {
+    const { command } = args as { command: string };
+
+    try {
+      const result = emuConsole(command.trim().split(/\s+/), adbOptions(args));
+      return dataResult(`emu ${result.command} on ${result.serial}`, result);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidRequest, error instanceof Error ? error.message : String(error));
+    }
+  },
+
+  // ─── Sequences ────────────────────────────────────────────────────────────
+  run_batch: async (args: any) => {
+    const { steps, delay_ms, continue_on_error, include_images } = args as {
+      steps?: Array<{ tool?: string; arguments?: Record<string, unknown>; wait_ms?: number }>;
+      delay_ms?: number;
+      continue_on_error?: boolean;
+      include_images?: 'none' | 'last' | 'all';
+    };
+
+    if (!Array.isArray(steps) || steps.length === 0) {
+      throw new McpError(ErrorCode.InvalidParams, 'run_batch needs a non-empty "steps" array');
+    }
+
+    const images: Array<{ index: number; block: Record<string, unknown> }> = [];
+
+    const outcome = await runBatch(
+      steps,
+      {
+        describe: (step, index) =>
+          step?.wait_ms !== undefined ? `wait ${step.wait_ms}ms` : step?.tool ?? `step ${index + 1}`,
+        isPause: (step) => step?.wait_ms !== undefined,
+        execute: async (step, index) => {
+          if (step?.wait_ms !== undefined) {
+            const ms = Math.max(Number(step.wait_ms) || 0, 0);
+            await sleep(ms);
+            return { summary: `waited ${ms}ms`, mutates: false };
+          }
+
+          const name = step?.tool;
+
+          if (!name) {
+            throw new Error('each step needs a "tool" name or a "wait_ms" pause');
+          }
+
+          // Nesting would make the pacing and the failure report meaningless.
+          if (name === 'run_batch') {
+            throw new Error('run_batch cannot be nested');
+          }
+
+          const handler = toolHandlers[name as keyof typeof toolHandlers];
+
+          if (!handler) {
+            throw new Error(`unknown tool "${name}"`);
+          }
+
+          // The batch-level device is the default; a step may still name its own.
+          const result: any = await handler({
+            ...(args?.device ? { device: args.device } : {}),
+            ...(step.arguments ?? {}),
+          });
+
+          const blocks: any[] = Array.isArray(result?.content) ? result.content : [];
+          const text = blocks
+            .filter((block) => block?.type === 'text')
+            .map((block) => String(block.text))
+            .join('\n');
+
+          for (const block of blocks.filter((block) => block?.type === 'image')) {
+            images.push({ index, block });
+          }
+
+          return { command: name, summary: text, mutates: mutatingTools.has(name) };
+        },
+      },
+      { delayMs: delay_ms, continueOnError: continue_on_error }
+    );
+
+    const report = outcome.steps
+      .map(
+        (step) =>
+          `[${step.index + 1}/${steps.length}] ${step.step}${
+            step.ok ? `: ${(step.summary ?? '').split('\n')[0]}` : ` — FAILED: ${step.error?.message}`
+          }`
+      )
+      .join('\n');
+
+    const wanted = include_images ?? 'last';
+    const selected =
+      wanted === 'none' ? [] : wanted === 'all' ? images : images.slice(-1);
+
+    return {
+      content: [
+        textBlock(`${describeBatch(outcome, steps.length)} (delay ${outcome.delayMs}ms)\n${report}`),
+        textBlock(JSON.stringify(outcome, null, 2)),
+        ...selected.map((entry) => entry.block),
+      ],
+    };
   },
 
   // ─── Test artifacts ─────────────────────────────────────────────────────────

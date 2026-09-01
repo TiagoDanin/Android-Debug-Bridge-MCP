@@ -28,6 +28,19 @@ GLOBAL FLAGS
   -h, --help              Show help
   -v, --version           Show the version
 
+BATCH
+  \`batch\` runs several commands in one process, in the shape an agent works in:
+  print -> action -> print. It pauses 300ms after each action, before the next
+  step reads the screen, because a command returns as soon as adb does — on a
+  tap that navigates, before the new screen exists. Reads (shot, dump, find,
+  logcat) change nothing, so nothing waits after them.
+
+  Override with --delay <ms> (--delay 0 to run flat out), or set
+  ADB_BATCH_DELAY_MS. A \`wait <ms>\` step is an explicit pause and replaces the
+  automatic one rather than adding to it. For a screen that loads over the
+  network, prefer \`ui wait <query>\` — waiting for content beats waiting for a
+  clock.
+
 COORDINATES
   Values between 0 and 1 are screen fractions, so \`input tap 0.5 0.7\` taps the
   middle-lower area of any screen size. Larger values are pixels. Force either
@@ -44,16 +57,26 @@ SCREENSHOTS
   compressed copy (--base64). Install the optional \`sharp\` dependency for JPEG
   and WebP output; without it a resized PNG is produced with Node's zlib alone.
 
+  --mark-tap circles the last gesture on the returned image (--mark-last <n> for
+  several, --mark <x,y> for a point of your own, --save-marked to write the
+  annotated PNG next to the original). The device's own indicator, which
+  \`input touches on\` enables, is drawn only while the finger is down: it lands
+  in \`screen record\` but never in a screenshot taken afterwards.
+
 ENVIRONMENT
   ADB_PATH                    Path to the adb binary (default: adb from PATH)
   ADB_SERIAL                  Default device (serial, prefix or model)
   ADB_DEVICE_CACHE_MS         How long the device list is cached (default 3000)
   ADB_SETTLE_MS               Delay after UI actions in ms (default 300)
+  ADB_BATCH_DELAY_MS          Pause between batch steps in ms (default 300)
   ADB_ARTIFACT_DIR            Where artifacts are written (default cwd)
   ADB_FALLBACK_CWD            Directory to move to when the cwd is unusable
   ADB_SCREENSHOT_MAX_WIDTH    Screenshot output width (default 720, 0 = original)
   ADB_SCREENSHOT_QUALITY      Lossy quality 1..100 (default 60)
   ADB_SCREENSHOT_FORMAT       auto | jpeg | webp | png | none (default auto)
+  ADB_MARKER_COLOR            Screenshot marker colour as hex (default #ff2d55)
+  ADB_TOUCH_HISTORY           off keeps the gesture history in memory only
+  ADB_TOUCH_HISTORY_FILE      Where the gesture history is stored
   ADB_SKILLS_DIR              Override the folder holding the SKILL.md files
 
 EXAMPLES
@@ -66,6 +89,8 @@ EXAMPLES
   ${BIN} input tap 0.5 0.7
   ${BIN} input text "hello world" --submit
   ${BIN} screen shot --test login --step 001_home
+  ${BIN} screen shot --mark-tap --save-marked
+  ${BIN} emu finger touch 1
   ${BIN} batch "app restart com.example" "ui wait Login" "ui tap Login" --json
 
 Run \`${BIN} skills get adb-cli\` for the full agent-facing guide.`;

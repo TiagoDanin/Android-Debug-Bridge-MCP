@@ -41,6 +41,45 @@ const objectSchema = (properties: Record<string, unknown>, required: string[] = 
   ...(required.length ? { required } : {}),
 });
 
+/**
+ * Tools that change what is on screen. `run_batch` waits after these before the
+ * next step reads the screen — a tool returns as soon as adb does, which on a
+ * tap that navigates is before the new screen exists. Kept beside the schemas
+ * so a new tool is classified where it is declared, and off the wire format.
+ */
+export const mutatingTools = new Set([
+  'reboot_device',
+  'ui_tap',
+  'input_tap',
+  'input_double_tap',
+  'input_long_press',
+  'input_swipe',
+  'input_scroll',
+  'input_text',
+  'input_keyevent',
+  'input_clear_text',
+  'open_app',
+  'stop_app',
+  'restart_app',
+  'clear_app_data',
+  'uninstall_app',
+  'rotate_screen',
+  'wake_screen',
+  'sleep_screen',
+  'unlock_device',
+  'toggle_wifi',
+  'toggle_mobile_data',
+  'toggle_airplane_mode',
+  'set_touch_feedback',
+  'open_deeplink',
+  'send_broadcast',
+  'put_setting',
+  'adb_shell',
+  'emu_finger_touch',
+  'emu_finger_remove',
+  'emu_console',
+]);
+
 export const toolDefinitions = [
   // ─── Devices ────────────────────────────────────────────────────────────────
   {
@@ -437,7 +476,73 @@ export const toolDefinitions = [
         type: 'boolean',
         description: 'Also write the compressed copy next to the PNG on disk',
       },
+      mark_last_touch: {
+        type: 'boolean',
+        description:
+          'Draw a ring where the last tap/gesture landed, on the saved file and the returned image alike. Only meaningful when the screen has not changed since — for a tap that navigated, mark the earlier screenshot with mark_screenshot instead.',
+      },
+      mark_last_count: {
+        type: 'number',
+        description: 'Mark the last N gestures instead of just the latest one, numbered in order',
+      },
+      markers: {
+        type: 'array',
+        description: 'Extra points to circle, in 0..1 fractions or pixels like every other coordinate',
+        items: {
+          type: 'object',
+          properties: {
+            x: { type: 'number' },
+            y: { type: 'number' },
+            label: { type: 'string', description: 'Short numeric caption drawn next to the ring' },
+            to: {
+              type: 'object',
+              description: 'Optional end point — draws an arrow, for gestures',
+              properties: { x: { type: 'number' }, y: { type: 'number' } },
+              required: ['x', 'y'],
+            },
+          },
+          required: ['x', 'y'],
+        },
+      },
+      marker_color: { type: 'string', description: 'Marker colour as hex (default #ff2d55)' },
     }),
+  },
+  {
+    name: 'mark_screenshot',
+    description:
+      'Draw the tap that just happened onto a screenshot taken before it. A click belongs to the screen it was decided from, not to the one it opened, and a capture cannot know what will be tapped next — so take the screenshot, act, then mark it. Rewrites the file in place unless out_path is given.',
+    inputSchema: objectSchema(
+      {
+        ...device,
+        file_path: { type: 'string', description: 'Screenshot (PNG) to annotate' },
+        out_path: { type: 'string', description: 'Write here instead of rewriting the source' },
+        mark_last_count: {
+          type: 'number',
+          description: 'Mark the last N gestures instead of just the latest one',
+        },
+        markers: {
+          type: 'array',
+          description: 'Explicit points to circle, in 0..1 fractions or pixels',
+          items: {
+            type: 'object',
+            properties: {
+              x: { type: 'number' },
+              y: { type: 'number' },
+              label: { type: 'string' },
+              to: {
+                type: 'object',
+                properties: { x: { type: 'number' }, y: { type: 'number' } },
+                required: ['x', 'y'],
+              },
+            },
+            required: ['x', 'y'],
+          },
+        },
+        marker_color: { type: 'string', description: 'Marker colour as hex (default #ff2d55)' },
+        include_image: { type: 'boolean', description: 'Return the annotated image (default true)' },
+      },
+      ['file_path']
+    ),
   },
   {
     name: 'record_screen',
@@ -509,6 +614,19 @@ export const toolDefinitions = [
     inputSchema: objectSchema({ ...device, enabled: { type: 'boolean', description: 'true to enable' } }, [
       'enabled',
     ]),
+  },
+  {
+    name: 'set_touch_feedback',
+    description:
+      'Toggle the on-device touch indicators (Show taps / Pointer location). They are drawn only while the finger is down, so they appear in screen recordings but not in a screenshot taken after the tap — use capture_screenshot with mark_last_touch for that. Call with no flags to just read the current state.',
+    inputSchema: objectSchema({
+      ...device,
+      show_touches: { type: 'boolean', description: 'Draw a circle under the finger while it touches' },
+      pointer_location: {
+        type: 'boolean',
+        description: 'Show the developer overlay with crosshairs and coordinate readouts',
+      },
+    }),
   },
   {
     name: 'get_connectivity_state',
@@ -654,6 +772,72 @@ export const toolDefinitions = [
     inputSchema: objectSchema(
       { ...device, command: { type: 'string', description: 'Command to run on the device' } },
       ['command']
+    ),
+  },
+
+  // ─── Emulator console ───────────────────────────────────────────────────────
+  {
+    name: 'emu_finger_touch',
+    description:
+      'Touch the emulator fingerprint sensor with an enrolled finger id (adb emu finger touch <id>) — the way to answer a biometric prompt on an AVD. The finger must already be enrolled in Settings; emulators only.',
+    inputSchema: objectSchema({
+      ...device,
+      finger_id: { type: 'number', description: 'Enrolled finger id (default 1)' },
+    }),
+  },
+  {
+    name: 'emu_finger_remove',
+    description: 'Lift the virtual finger off the emulator fingerprint sensor (adb emu finger remove)',
+    inputSchema: objectSchema({ ...device }),
+  },
+  {
+    name: 'emu_console',
+    description:
+      'Send a raw command to the emulator console (adb emu …), e.g. "geo fix -46.6 -23.5", "sms send 5551234 hi", "power capacity 15". Emulators only.',
+    inputSchema: objectSchema(
+      { ...device, command: { type: 'string', description: 'Console command, e.g. "finger touch 1"' } },
+      ['command']
+    ),
+  },
+
+  // ─── Sequences ────────────────────────────────────────────────────────────
+  {
+    name: 'run_batch',
+    description:
+      'Run several tools in order, in one call, pacing them the way a UI flow needs: after a step that changes the screen it waits (300ms by default) before the next one reads it. Use it for a sequence already decided — tap, wait for an element, capture — where nothing has to be judged in between; keep calling tools one at a time when the next step depends on what you see. Stops at the first failure unless continue_on_error is set, and reports every step.',
+    inputSchema: objectSchema(
+      {
+        ...device,
+        steps: {
+          type: 'array',
+          description:
+            'Steps in order. Each is either {tool, arguments} or {wait_ms} for an explicit pause.',
+          items: {
+            type: 'object',
+            properties: {
+              tool: { type: 'string', description: 'Name of the tool to call' },
+              arguments: { type: 'object', description: 'Arguments for that tool' },
+              wait_ms: { type: 'number', description: 'Pause instead of calling a tool' },
+            },
+          },
+        },
+        delay_ms: {
+          type: 'number',
+          description:
+            'Pause after each step that changes the screen (default 300, 0 to run flat out). A wait_ms step replaces this pause rather than adding to it.',
+        },
+        continue_on_error: {
+          type: 'boolean',
+          description: 'Run the remaining steps after a failure instead of stopping',
+        },
+        include_images: {
+          type: 'string',
+          enum: ['none', 'last', 'all'],
+          description:
+            'Which screenshots to return: only the final one (default), every one, or none. Files written by the steps are unaffected.',
+        },
+      },
+      ['steps']
     ),
   },
 

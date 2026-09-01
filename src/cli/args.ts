@@ -39,6 +39,8 @@ const BOOLEAN_FLAGS = new Set([
   'third-party',
   'no-compress',
   'save-compressed',
+  'mark-tap',
+  'pointer',
   'refresh',
 ]);
 

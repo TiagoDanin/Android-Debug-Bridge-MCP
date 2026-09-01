@@ -14,6 +14,7 @@ import {
   stopApp,
   uninstallApp,
 } from '../core/app.js';
+import { Marker } from '../core/annotate.js';
 import { createTestFolder, listArtifacts } from '../core/artifacts.js';
 import {
   connectDevice,
@@ -24,6 +25,7 @@ import {
   rebootDevice,
   waitForBoot,
 } from '../core/device.js';
+import { emuConsole, fingerRemove, fingerTouch } from '../core/emulator.js';
 import { CoordinateMode, clearScreenSizeCache } from '../core/geometry.js';
 import { ImageFormat, compressionDefaults, describeCompression, hasSharp } from '../core/image.js';
 import {
@@ -41,6 +43,7 @@ import {
 import {
   artifactRoot,
   captureScreenshot,
+  markScreenshot,
   recordScreen,
   rotateScreen,
   screenState,
@@ -66,6 +69,8 @@ import {
   readLogcat,
   sendBroadcast,
   setToggle,
+  setTouchFeedback,
+  touchFeedbackState,
 } from '../core/system.js';
 import {
   describeElement,
@@ -95,6 +100,13 @@ export interface CommandContext {
 export interface CommandSpec {
   usage: string;
   summary: string;
+  /**
+   * Whether the command changes what is on screen. `batch` waits after these
+   * before running the next step, because an action returns as soon as adb
+   * does — which on a tap that navigates is before the new screen exists.
+   * Reads (screenshots, dumps, logcat) leave the screen alone and need no pause.
+   */
+  mutates?: boolean;
   run: (ctx: CommandContext) => Promise<CommandResult>;
 }
 
@@ -150,6 +162,21 @@ function buildQuery(ctx: CommandContext, queryIndex = 0): FindQuery {
     clickableOnly: flagBoolean(ctx.flags, 'clickable'),
     exact: flagBoolean(ctx.flags, 'exact'),
   };
+}
+
+/** `--mark 0.5,0.7` / `--mark 540,1200`, repeatable. */
+function parseMarkers(values: string[]): Marker[] {
+  return values.map((value) => {
+    const [rawX, rawY] = value.split(/[,;x]/);
+    const x = Number(rawX);
+    const y = Number(rawY);
+
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      throw new Error(`--mark expects <x>,<y>, got "${value}"`);
+    }
+
+    return { x, y };
+  });
 }
 
 function serializeMatch(element: MatchedElement) {
@@ -250,6 +277,7 @@ export const registry: Record<string, CommandGroup> = {
       reboot: {
         usage: 'device reboot [bootloader|recovery|sideload]',
         summary: 'Reboot the device',
+        mutates: true,
         run: async (ctx) => {
           clearScreenSizeCache();
           const mode = ctx.positionals[0];
@@ -315,6 +343,7 @@ export const registry: Record<string, CommandGroup> = {
       tap: {
         usage: 'ui tap <query> [--index <n>] [--exact] [--force]',
         summary: 'Tap the element matching a query — resilient to layout changes',
+        mutates: true,
         run: async (ctx) => {
           const index = flagNumber(ctx.flags, 'index') ?? 0;
           const query = buildQuery(ctx);
@@ -386,6 +415,7 @@ export const registry: Record<string, CommandGroup> = {
       tap: {
         usage: 'input tap <x> <y> [--px|--norm]',
         summary: 'Tap a point (0..1 fractions by default)',
+        mutates: true,
         run: async (ctx) => {
           const x = requiredNumber(ctx, 0, 'x');
           const y = requiredNumber(ctx, 1, 'y');
@@ -400,6 +430,7 @@ export const registry: Record<string, CommandGroup> = {
       'double-tap': {
         usage: 'input double-tap <x> <y>',
         summary: 'Double tap a point',
+        mutates: true,
         run: async (ctx) => {
           const x = requiredNumber(ctx, 0, 'x');
           const y = requiredNumber(ctx, 1, 'y');
@@ -414,6 +445,7 @@ export const registry: Record<string, CommandGroup> = {
       'long-press': {
         usage: 'input long-press <x> <y> [--duration <ms>]',
         summary: 'Press and hold a point',
+        mutates: true,
         run: async (ctx) => {
           const x = requiredNumber(ctx, 0, 'x');
           const y = requiredNumber(ctx, 1, 'y');
@@ -429,6 +461,7 @@ export const registry: Record<string, CommandGroup> = {
       swipe: {
         usage: 'input swipe <x1> <y1> <x2> <y2> [--duration <ms>]',
         summary: 'Swipe between two points',
+        mutates: true,
         run: async (ctx) => {
           const x1 = requiredNumber(ctx, 0, 'x1');
           const y1 = requiredNumber(ctx, 1, 'y1');
@@ -450,6 +483,7 @@ export const registry: Record<string, CommandGroup> = {
       scroll: {
         usage: 'input scroll <up|down|left|right> [--amount <0.05..0.9>] [--duration <ms>]',
         summary: 'Scroll the screen',
+        mutates: true,
         run: async (ctx) => {
           const direction = required(ctx, 0, 'direction') as ScrollDirection;
           const amount = flagNumber(ctx.flags, 'amount') ?? 0.6;
@@ -470,6 +504,7 @@ export const registry: Record<string, CommandGroup> = {
       text: {
         usage: 'input text <text...> [--submit]',
         summary: 'Type into the focused field (ASCII only)',
+        mutates: true,
         run: async (ctx) => {
           const text = flagString(ctx.flags, 'value') ?? joinRest(ctx, 0, 'text');
           const submit = flagBoolean(ctx.flags, 'submit');
@@ -488,6 +523,7 @@ export const registry: Record<string, CommandGroup> = {
       key: {
         usage: 'input key <KEY|keycode>',
         summary: `Send a key event (${Object.keys(KEY_CODES).slice(0, 8).join(', ')}…)`,
+        mutates: true,
         run: async (ctx) => {
           const key = required(ctx, 0, 'key');
           const result = await pressKey(key, ctx.adb);
@@ -498,6 +534,7 @@ export const registry: Record<string, CommandGroup> = {
       clear: {
         usage: 'input clear [--count <n>]',
         summary: 'Clear the focused text field',
+        mutates: true,
         run: async (ctx) => {
           const count = flagNumber(ctx.flags, 'count') ?? 60;
           const result = await clearText(count, ctx.adb);
@@ -505,9 +542,40 @@ export const registry: Record<string, CommandGroup> = {
           return { summary: `cleared field (${result.deletes} backspaces)`, data: result };
         },
       },
+      touches: {
+        usage: 'input touches [on|off] [--pointer]',
+        summary: 'Toggle the on-device touch indicator (show taps)',
+        mutates: true,
+        run: async (ctx) => {
+          const describe = (value: boolean | null) =>
+            value === null ? 'unknown' : value ? 'on' : 'off';
+
+          if (ctx.positionals.length === 0) {
+            const state = touchFeedbackState(ctx.adb);
+
+            return {
+              summary: `show-taps  ${describe(state.showTouches)}\npointer    ${describe(state.pointerLocation)}`,
+              data: state,
+            };
+          }
+
+          const enabled = parseToggleValue(ctx.positionals[0], 'input touches');
+          const pointer = flagBoolean(ctx.flags, 'pointer');
+          const state = await setTouchFeedback(
+            { showTouches: enabled, ...(pointer ? { pointerLocation: enabled } : {}) },
+            ctx.adb
+          );
+
+          return {
+            summary: `show-taps ${describe(state.showTouches)}, pointer ${describe(state.pointerLocation)} — the indicator only exists while the finger is down, so it lands in "screen record" but not in a screenshot taken afterwards (use "screen shot --mark-tap" for that)`,
+            data: state,
+          };
+        },
+      },
       keys: {
         usage: 'input keys <KEY> [KEY...]',
         summary: 'Send several key events in order',
+        mutates: true,
         run: async (ctx) => {
           if (ctx.positionals.length === 0) {
             throw new Error('missing required argument <KEY>');
@@ -553,6 +621,7 @@ export const registry: Record<string, CommandGroup> = {
       launch: {
         usage: 'app launch <package> [activity]',
         summary: 'Launch an app, resolving its launcher activity',
+        mutates: true,
         run: async (ctx) => {
           const packageName = required(ctx, 0, 'package');
           const activity = ctx.positionals[1];
@@ -567,6 +636,7 @@ export const registry: Record<string, CommandGroup> = {
       stop: {
         usage: 'app stop <package>',
         summary: 'Force-stop an app',
+        mutates: true,
         run: async (ctx) => {
           const packageName = required(ctx, 0, 'package');
           return { summary: await stopApp(packageName, ctx.adb), data: { packageName, stopped: true } };
@@ -575,6 +645,7 @@ export const registry: Record<string, CommandGroup> = {
       restart: {
         usage: 'app restart <package>',
         summary: 'Force-stop and relaunch an app',
+        mutates: true,
         run: async (ctx) => {
           const packageName = required(ctx, 0, 'package');
           const result = await restartApp(packageName, ctx.adb);
@@ -584,6 +655,7 @@ export const registry: Record<string, CommandGroup> = {
       clear: {
         usage: 'app clear <package>',
         summary: 'Clear app data (destructive: back to first-install state)',
+        mutates: true,
         run: async (ctx) => {
           const packageName = required(ctx, 0, 'package');
           return {
@@ -632,6 +704,7 @@ export const registry: Record<string, CommandGroup> = {
       uninstall: {
         usage: 'app uninstall <package> [--keep-data]',
         summary: 'Uninstall an app',
+        mutates: true,
         run: async (ctx) => {
           const packageName = required(ctx, 0, 'package');
           const output = uninstallApp(packageName, flagBoolean(ctx.flags, 'keep-data'), ctx.adb);
@@ -683,8 +756,8 @@ export const registry: Record<string, CommandGroup> = {
     commands: {
       shot: {
         usage:
-          'screen shot [--out <file>] [--test <name>] [--step <name>] [--base64] [--max-width <px>] [--quality <1..100>] [--format auto|jpeg|webp|png|none] [--no-compress] [--save-compressed]',
-        summary: 'Capture a screenshot (PNG on disk, compressed copy in the output)',
+          'screen shot [--out <file>] [--test <name>] [--step <name>] [--base64] [--max-width <px>] [--quality <1..100>] [--format auto|jpeg|webp|png|none] [--no-compress] [--save-compressed] [--mark-tap] [--mark-last <n>] [--mark <x,y>]… [--marker-color <hex>]',
+        summary: 'Capture a screenshot (one file: marked when a marker flag is given)',
         run: async (ctx) => {
           const explicit = flagString(ctx.flags, 'out') ?? ctx.positionals[0];
           const testName = flagString(ctx.flags, 'test');
@@ -694,18 +767,34 @@ export const registry: Record<string, CommandGroup> = {
             screenshotPath(testName, stepName) ??
             path.join(artifactRoot(), `screenshot-${timestamp()}.png`);
 
+          const markLast = flagNumber(ctx.flags, 'mark-last');
           const result = await captureScreenshot(target, ctx.adb, {
             maxWidth: flagNumber(ctx.flags, 'max-width'),
             quality: flagNumber(ctx.flags, 'quality'),
             format: flagString(ctx.flags, 'format') as ImageFormat | undefined,
             compress: !flagBoolean(ctx.flags, 'no-compress'),
             saveCompressed: flagBoolean(ctx.flags, 'save-compressed'),
+            markers: parseMarkers(ctx.repeated.mark ?? []),
+            markerMode: ctx.mode,
+            markLastTouch: markLast ?? flagBoolean(ctx.flags, 'mark-tap'),
+            markerColor: flagString(ctx.flags, 'marker-color'),
           });
 
           const wantsBase64 = flagBoolean(ctx.flags, 'base64');
           const lines = [
             `${result.path} (${result.originalBytes} bytes, ${result.screen.width}x${result.screen.height})`,
             ...(result.compressedPath ? [`${result.compressedPath}`] : []),
+            ...(result.markers.length
+              ? [
+                  `marked ${result.markers
+                    .map(
+                      (marker) =>
+                        `(${marker.x}, ${marker.y})${marker.to ? ` → (${marker.to.x}, ${marker.to.y})` : ''}`
+                    )
+                    .join(', ')}`,
+                ]
+              : []),
+            ...(result.markerNote ? [result.markerNote] : []),
             `returned ${describeCompression(result.image)}`,
           ];
 
@@ -714,6 +803,8 @@ export const registry: Record<string, CommandGroup> = {
             data: {
               path: result.path,
               compressedPath: result.compressedPath,
+              markers: result.markers,
+              ...(result.markerNote ? { markerNote: result.markerNote } : {}),
               bytes: result.bytes,
               originalBytes: result.originalBytes,
               mimeType: result.mimeType,
@@ -725,6 +816,44 @@ export const registry: Record<string, CommandGroup> = {
                 ...(result.image.note ? { note: result.image.note } : {}),
               },
               ...(wantsBase64 ? { base64: result.base64 } : {}),
+            },
+          };
+        },
+      },
+      mark: {
+        usage: 'screen mark <file.png> [--out <file>] [--last <n>] [--mark <x,y>]… [--marker-color <hex>]',
+        summary: 'Draw the gesture that followed onto a screenshot already taken',
+        run: async (ctx) => {
+          const source = required(ctx, 0, 'file.png');
+          const explicit = parseMarkers(ctx.repeated.mark ?? []);
+          const last = flagNumber(ctx.flags, 'last');
+
+          const result = await markScreenshot(
+            source,
+            flagString(ctx.flags, 'out') ?? null,
+            ctx.adb,
+            {
+              markers: explicit,
+              markerMode: ctx.mode,
+              ...(last !== undefined ? { markLastTouch: last } : {}),
+              markerColor: flagString(ctx.flags, 'marker-color'),
+            }
+          );
+
+          const points = result.markers
+            .map(
+              (marker) =>
+                `(${marker.x}, ${marker.y})${marker.to ? ` → (${marker.to.x}, ${marker.to.y})` : ''}`
+            )
+            .join(', ');
+
+          return {
+            summary: `${result.path} — marked ${points}`,
+            data: {
+              path: result.path,
+              source: result.source,
+              markers: result.markers,
+              bytes: result.bytes,
             },
           };
         },
@@ -745,6 +874,7 @@ export const registry: Record<string, CommandGroup> = {
       rotate: {
         usage: 'screen rotate <auto|0|90|180|270>',
         summary: 'Set the screen orientation',
+        mutates: true,
         run: async (ctx) => {
           const value = required(ctx, 0, 'orientation');
           const orientation = value === 'auto' ? 'auto' : (Number(value) as 0 | 90 | 180 | 270);
@@ -771,6 +901,7 @@ export const registry: Record<string, CommandGroup> = {
       wake: {
         usage: 'screen wake',
         summary: 'Wake the display and dismiss the keyguard swipe',
+        mutates: true,
         run: async (ctx) => {
           const result = await wakeScreen(ctx.adb);
           return { summary: result.awake ? 'screen awake' : 'wake sent, display still asleep', data: result };
@@ -779,6 +910,7 @@ export const registry: Record<string, CommandGroup> = {
       sleep: {
         usage: 'screen sleep',
         summary: 'Turn the display off',
+        mutates: true,
         run: async (ctx) => {
           const result = await sleepScreen(ctx.adb);
           return { summary: result.awake ? 'sleep sent, display still awake' : 'screen off', data: result };
@@ -787,6 +919,7 @@ export const registry: Record<string, CommandGroup> = {
       unlock: {
         usage: 'screen unlock <pin>',
         summary: 'Wake, swipe and type a numeric PIN',
+        mutates: true,
         run: async (ctx) => {
           const pin = required(ctx, 0, 'pin');
           const result = await unlockWithPin(pin, ctx.adb);
@@ -802,6 +935,7 @@ export const registry: Record<string, CommandGroup> = {
       wifi: {
         usage: 'system wifi <on|off>',
         summary: 'Toggle Wi-Fi',
+        mutates: true,
         run: async (ctx) => {
           const enabled = parseToggleValue(ctx.positionals[0], 'system wifi');
           return { summary: await setToggle('wifi', enabled, ctx.adb), data: { wifi: enabled } };
@@ -810,6 +944,7 @@ export const registry: Record<string, CommandGroup> = {
       data: {
         usage: 'system data <on|off>',
         summary: 'Toggle mobile data',
+        mutates: true,
         run: async (ctx) => {
           const enabled = parseToggleValue(ctx.positionals[0], 'system data');
           return { summary: await setToggle('data', enabled, ctx.adb), data: { data: enabled } };
@@ -818,6 +953,7 @@ export const registry: Record<string, CommandGroup> = {
       airplane: {
         usage: 'system airplane <on|off>',
         summary: 'Toggle airplane mode',
+        mutates: true,
         run: async (ctx) => {
           const enabled = parseToggleValue(ctx.positionals[0], 'system airplane');
           return { summary: await setToggle('airplane', enabled, ctx.adb), data: { airplane: enabled } };
@@ -866,6 +1002,7 @@ export const registry: Record<string, CommandGroup> = {
       deeplink: {
         usage: 'system deeplink <url> [--package <pkg>]',
         summary: 'Open a URL or deeplink',
+        mutates: true,
         run: async (ctx) => {
           const url = required(ctx, 0, 'url');
           const output = await openDeeplink(url, flagString(ctx.flags, 'package'), ctx.adb);
@@ -875,6 +1012,7 @@ export const registry: Record<string, CommandGroup> = {
       broadcast: {
         usage: 'system broadcast <action> [--extra key=value]…',
         summary: 'Broadcast an intent',
+        mutates: true,
         run: async (ctx) => {
           const action = required(ctx, 0, 'action');
           const extras: Record<string, string> = {};
@@ -914,6 +1052,7 @@ export const registry: Record<string, CommandGroup> = {
       setting: {
         usage: 'system setting <get|put> <system|secure|global> <key> [value]',
         summary: 'Read or write an Android setting',
+        mutates: true,
         run: async (ctx) => {
           const action = required(ctx, 0, 'get|put');
           const namespace = required(ctx, 1, 'namespace') as 'system' | 'secure' | 'global';
@@ -984,10 +1123,54 @@ export const registry: Record<string, CommandGroup> = {
       shell: {
         usage: 'system shell <command...>',
         summary: 'Run a raw command in the device shell',
+        mutates: true,
         run: async (ctx) => {
           const command = joinRest(ctx, 0, 'command');
           const output = rawShell(command, ctx.adb);
           return { summary: output || '(no output)', data: { command, output } };
+        },
+      },
+    },
+  },
+
+  emu: {
+    summary: 'Drive the emulator console (virtual sensors and hardware)',
+    commands: {
+      finger: {
+        usage: 'emu finger <touch|remove> [id]',
+        summary: 'Touch the virtual fingerprint sensor with an enrolled finger',
+        mutates: true,
+        run: async (ctx) => {
+          const action = required(ctx, 0, 'touch|remove');
+
+          if (action === 'remove') {
+            const removed = await fingerRemove(ctx.adb);
+            return { summary: `finger lifted on ${removed.serial}`, data: removed };
+          }
+
+          if (action !== 'touch') {
+            throw new Error(`emu finger expects touch or remove, got "${action}"`);
+          }
+
+          const result = await fingerTouch(ctx.positionals[1] ?? '1', ctx.adb);
+
+          return {
+            summary: `finger ${result.fingerId} touched the sensor on ${result.serial}${result.output ? ` — ${result.output}` : ''}`,
+            data: result,
+          };
+        },
+      },
+      send: {
+        usage: 'emu send <console command...>',
+        summary: 'Send a raw command to the emulator console',
+        mutates: true,
+        run: async (ctx) => {
+          if (ctx.positionals.length === 0) {
+            throw new Error('missing required argument <console command>');
+          }
+
+          const result = emuConsole(ctx.positionals, ctx.adb);
+          return { summary: result.output || `emu ${result.command} sent`, data: result };
         },
       },
     },

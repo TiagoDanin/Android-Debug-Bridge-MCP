@@ -9,10 +9,12 @@ ensureWorkingDirectory();
 import * as fs from 'fs';
 import * as path from 'path';
 import { AdbOptions } from '../core/adb.js';
+import { describeBatch, runBatch } from '../core/batch.js';
 import { CoordinateMode } from '../core/geometry.js';
-import { FlagValue, flagBoolean, flagString, parseArgs, tokenize } from './args.js';
+import { sleep } from '../utils/sleep.js';
+import { FlagValue, flagBoolean, flagNumber, flagString, parseArgs, tokenize } from './args.js';
 import { globalHelp, groupHelp } from './help.js';
-import { CommandResult, emitError, emitResult, writeStdout } from './output.js';
+import { CommandResult, emitError, emitResult, writeStderr, writeStdout } from './output.js';
 import { CommandContext, findCommand, registry } from './registry.js';
 
 interface GlobalOptions {
@@ -110,7 +112,10 @@ function buildContext(
   return { group, command, ctx };
 }
 
-async function runTokens(tokens: string[], globals: GlobalOptions): Promise<{ label: string; result: CommandResult }> {
+async function runTokens(
+  tokens: string[],
+  globals: GlobalOptions
+): Promise<{ label: string; result: CommandResult; mutates: boolean }> {
   const { group, command, ctx } = buildContext(tokens, globals);
   const spec = findCommand(group, command);
 
@@ -119,7 +124,7 @@ async function runTokens(tokens: string[], globals: GlobalOptions): Promise<{ la
   }
 
   const result = await spec.run(ctx);
-  return { label: `${group}.${command}`, result };
+  return { label: `${group}.${command}`, result, mutates: spec.mutates === true };
 }
 
 function readBatchSteps(parsed: ReturnType<typeof parseArgs>): string[] {
@@ -146,10 +151,25 @@ function readBatchSteps(parsed: ReturnType<typeof parseArgs>): string[] {
   return positionals;
 }
 
-async function runBatch(argv: string[], globals: GlobalOptions): Promise<number> {
+/** `wait 500` — batch-local sugar for pausing between steps. */
+const WAIT_STEP = /^wait\s+(\d+)$/i;
+
+/** `--delay <ms>`, validated here so a typo is an error and not a silent default. */
+function delayFlag(flags: Record<string, FlagValue>): number | undefined {
+  if (!('delay' in flags)) return undefined;
+
+  const value = flagNumber(flags, 'delay');
+
+  if (value === undefined) {
+    throw new Error('--delay expects a number of milliseconds, e.g. --delay 500');
+  }
+
+  return value;
+}
+
+async function runBatchCommand(argv: string[], globals: GlobalOptions): Promise<number> {
   const parsed = parseArgs(argv);
   const steps = readBatchSteps(parsed);
-  const continueOnError = flagBoolean(parsed.flags, 'continue-on-error');
   const json = globals.json || flagBoolean(parsed.flags, 'json');
 
   if (steps.length === 0) {
@@ -158,36 +178,37 @@ async function runBatch(argv: string[], globals: GlobalOptions): Promise<number>
     );
   }
 
-  const results: Array<Record<string, unknown>> = [];
-  let failures = 0;
+  const outcome = await runBatch(
+    steps,
+    {
+      describe: (step) => step,
+      isPause: (step) => WAIT_STEP.test(step),
+      execute: async (step) => {
+        const waitMatch = WAIT_STEP.exec(step);
 
-  for (let index = 0; index < steps.length; index += 1) {
-    const step = steps[index];
+        if (waitMatch) {
+          const ms = Number(waitMatch[1]);
+          await sleep(ms);
+          return { summary: `waited ${ms}ms`, mutates: false };
+        }
 
-    // `wait <ms>` is batch-local sugar for pausing between steps.
-    const waitMatch = step.match(/^wait\s+(\d+)$/i);
+        const { label, result, mutates } = await runTokens(tokenize(step), {
+          ...globals,
+          json: false,
+        });
 
-    if (waitMatch) {
-      const ms = Number(waitMatch[1]);
-      await new Promise((resolve) => setTimeout(resolve, ms));
-      results.push({ index, step, ok: true, summary: `waited ${ms}ms` });
-      if (!json) writeStdout(`[${index + 1}/${steps.length}] ${step}\n  waited ${ms}ms`);
-      continue;
-    }
+        return { command: label, summary: result.summary, data: result.data, mutates };
+      },
+      onStep: (result, total) => {
+        if (json) return;
 
-    try {
-      const { label, result } = await runTokens(tokenize(step), { ...globals, json: false });
-      results.push({
-        index,
-        step,
-        command: label,
-        ok: true,
-        summary: result.summary,
-        ...(result.data === undefined ? {} : { data: result.data }),
-      });
+        writeStdout(`[${result.index + 1}/${total}] ${result.step}`);
 
-      if (!json) {
-        writeStdout(`[${index + 1}/${steps.length}] ${step}`);
+        if (result.error) {
+          writeStderr(`  error: ${result.error.message}`);
+          return;
+        }
+
         if (result.summary) {
           writeStdout(
             result.summary
@@ -196,47 +217,25 @@ async function runBatch(argv: string[], globals: GlobalOptions): Promise<number>
               .join('\n')
           );
         }
-      }
-    } catch (error) {
-      failures += 1;
-      const message = error instanceof Error ? error.message : String(error);
-      results.push({ index, step, ok: false, error: { message } });
-
-      if (!json) {
-        writeStdout(`[${index + 1}/${steps.length}] ${step}`);
-        process.stderr.write(`  error: ${message}\n`);
-      }
-
-      if (!continueOnError) {
-        if (json) {
-          writeStdout(
-            JSON.stringify({
-              ok: false,
-              command: 'batch',
-              summary: `${index} of ${steps.length} steps completed before failing`,
-              data: { steps: results, failed: failures, stopped: true },
-            })
-          );
-        }
-        return 1;
-      }
-    }
-  }
+      },
+    },
+    { delayMs: delayFlag(parsed.flags), continueOnError: flagBoolean(parsed.flags, 'continue-on-error') }
+  );
 
   if (json) {
     writeStdout(
       JSON.stringify({
-        ok: failures === 0,
+        ok: outcome.failed === 0,
         command: 'batch',
-        summary: `${steps.length - failures}/${steps.length} steps succeeded`,
-        data: { steps: results, failed: failures, stopped: false },
+        summary: describeBatch(outcome, steps.length),
+        data: outcome,
       })
     );
-  } else if (failures > 0) {
-    process.stderr.write(`${failures} of ${steps.length} steps failed\n`);
+  } else if (outcome.failed > 0) {
+    writeStderr(`${outcome.failed} of ${steps.length} steps failed`);
   }
 
-  return failures === 0 ? 0 : 1;
+  return outcome.failed === 0 ? 0 : 1;
 }
 
 async function main(): Promise<number> {
@@ -275,7 +274,7 @@ async function main(): Promise<number> {
   }
 
   if (group === 'batch') {
-    return runBatch(argv, globals);
+    return runBatchCommand(argv, globals);
   }
 
   const { label, result } = await runTokens(argv, globals);
