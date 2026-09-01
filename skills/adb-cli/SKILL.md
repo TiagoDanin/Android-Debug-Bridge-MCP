@@ -31,10 +31,12 @@ works anywhere, and `node dist/cli/index.js` works inside a built checkout.
 adb-agent doctor
 ```
 
-Three checks: adb on the PATH, a device in the `device` state, and `uiautomator`
-able to dump the current screen. Every other command depends on all three, so
-fix what it reports before going further — a red `doctor` means the failures you
-see later will be misleading.
+Five checks: adb on the PATH, a usable working directory, the screenshot
+encoder in use, exactly one device to target, and `uiautomator` able to dump the
+current screen. Every other command depends on those, so fix what it reports
+before going further — a red `doctor` means the failures you see later will be
+misleading. It also names the device that unqualified commands will hit, which
+is the fastest way to notice you are driving the wrong emulator.
 
 ## The two rules that matter
 
@@ -56,8 +58,10 @@ reading with `--norm` or `--px`.
 
 ## Command surface
 
-Every command accepts `--json`, `-d/--device <serial>` and `-q/--quiet`. Run
-`adb-agent <group> --help` for the exact usage of a group.
+Every command accepts `--json`, `-d/--device <ref>` and `-q/--quiet`. Run
+`adb-agent <group> --help` for the exact usage of a group. `--device` takes a
+full serial, a serial prefix, a transport id or a model name, so
+`-d pixel` and `-d emulator-5554` reach the same device.
 
 | Group | What it covers |
 |-------|----------------|
@@ -117,6 +121,7 @@ directly:
 ```bash
 adb-agent ui find "" --clickable --json | jq -r '.data.matches[].label'
 adb-agent device list --json | jq -r '.data[] | select(.state=="device") | .serial'
+adb-agent device list --json | jq -r '.data[] | select(.default) | .serial'
 ```
 
 ## JSON contract
@@ -186,8 +191,13 @@ adb-agent app current
   not send under `data.unsupported`; when that list is non-empty, either paste
   the value another way or ask the user to type it.
 - **Multiple devices need a target.** With more than one device attached,
-  commands fail with the list of serials instead of guessing. Pass
-  `-d <serial>` or export `ADB_SERIAL`.
+  commands fail with the list of candidates instead of guessing. Pass
+  `-d <serial|prefix|model>` or export `ADB_SERIAL` once for the session;
+  `device list` marks the current default with `*`.
+- **`screen shot` returns a shrunken image.** The PNG on disk is full
+  resolution, but the reported copy is downscaled (720px wide by default) and
+  compressed. Use `--max-width`/`--format` when detail matters, or
+  `--no-compress` for the untouched bytes.
 - **A dumped tree is a snapshot.** Animations and async loads invalidate it, so
   prefer `ui wait <query>` over `wait 3000` before acting on a fresh screen.
 - **The tree has no z-order.** Bounds overlap freely and nothing says which
@@ -205,9 +215,14 @@ adb-agent app current
 | Variable | Effect |
 |----------|--------|
 | `ADB_PATH` | Path to the adb binary (default: `adb` from PATH) |
-| `ADB_SERIAL` | Default device serial for every command |
+| `ADB_SERIAL` | Default device for every command — serial, prefix or model |
+| `ADB_DEVICE_CACHE_MS` | How long the device list is cached (default 3000) |
 | `ADB_SETTLE_MS` | Delay after UI actions in ms (default 300) |
 | `ADB_ARTIFACT_DIR` | Where screenshots/recordings are written (default cwd) |
+| `ADB_FALLBACK_CWD` | Directory to move to when the working directory is gone |
+| `ADB_SCREENSHOT_MAX_WIDTH` | Width of the returned screenshot (default 720, `0` = original) |
+| `ADB_SCREENSHOT_QUALITY` | Lossy quality 1..100 (default 60) |
+| `ADB_SCREENSHOT_FORMAT` | `auto`, `jpeg`, `webp`, `png` or `none` (default `auto`) |
 | `ADB_SKILLS_DIR` | Override the folder holding these SKILL.md files |
 
 ## Reading this file from the CLI

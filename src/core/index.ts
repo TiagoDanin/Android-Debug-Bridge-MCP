@@ -3,6 +3,7 @@ export * from './app.js';
 export * from './artifacts.js';
 export * from './device.js';
 export * from './geometry.js';
+export * from './image.js';
 export * from './input.js';
 export * from './screen.js';
 export * from './system.js';

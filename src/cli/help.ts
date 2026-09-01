@@ -19,7 +19,8 @@ ${groups}
   batch      Run a sequence of commands, stopping at the first failure
 
 GLOBAL FLAGS
-  -d, --device <serial>   Target device (default: ADB_SERIAL or the only device)
+  -d, --device <ref>      Target device by serial, serial prefix, transport id
+                          or model (default: ADB_SERIAL or the only device)
       --json              Emit a single JSON envelope: {ok, command, summary, data}
       --px                Read coordinates as pixels
       --norm              Read coordinates as 0..1 screen fractions
@@ -32,16 +33,33 @@ COORDINATES
   middle-lower area of any screen size. Larger values are pixels. Force either
   reading with --norm or --px.
 
+MULTIPLE DEVICES
+  With more than one device connected, every command needs to know which one:
+  pass --device, set ADB_SERIAL, or run \`${BIN} device list\` to see the
+  serials. The matcher accepts a prefix or a model name, so --device pixel
+  works as well as --device emulator-5554.
+
+SCREENSHOTS
+  \`screen shot\` writes the full-resolution PNG to disk and prints a downscaled,
+  compressed copy (--base64). Install the optional \`sharp\` dependency for JPEG
+  and WebP output; without it a resized PNG is produced with Node's zlib alone.
+
 ENVIRONMENT
-  ADB_PATH          Path to the adb binary (default: adb from PATH)
-  ADB_SERIAL        Default device serial
-  ADB_SETTLE_MS     Delay after UI actions in ms (default 300)
-  ADB_ARTIFACT_DIR  Where screenshots and recordings are written (default cwd)
-  ADB_SKILLS_DIR    Override the folder holding the SKILL.md files
+  ADB_PATH                    Path to the adb binary (default: adb from PATH)
+  ADB_SERIAL                  Default device (serial, prefix or model)
+  ADB_DEVICE_CACHE_MS         How long the device list is cached (default 3000)
+  ADB_SETTLE_MS               Delay after UI actions in ms (default 300)
+  ADB_ARTIFACT_DIR            Where artifacts are written (default cwd)
+  ADB_FALLBACK_CWD            Directory to move to when the cwd is unusable
+  ADB_SCREENSHOT_MAX_WIDTH    Screenshot output width (default 720, 0 = original)
+  ADB_SCREENSHOT_QUALITY      Lossy quality 1..100 (default 60)
+  ADB_SCREENSHOT_FORMAT       auto | jpeg | webp | png | none (default auto)
+  ADB_SKILLS_DIR              Override the folder holding the SKILL.md files
 
 EXAMPLES
   ${BIN} doctor
   ${BIN} device list --json
+  ${BIN} --device pixel screen shot --max-width 540
   ${BIN} app launch com.android.settings
   ${BIN} ui find "Wi-Fi" --json
   ${BIN} ui tap "Wi-Fi"

@@ -4,7 +4,7 @@ const device = {
   device: {
     type: 'string',
     description:
-      'Target device serial. Defaults to ADB_SERIAL/ANDROID_SERIAL, or the only connected device.',
+      'Target device: full serial, serial prefix, transport id or model name (use list_devices to see them). Defaults to ADB_SERIAL/ANDROID_SERIAL, or the only connected device.',
   },
 } as const;
 
@@ -45,8 +45,11 @@ export const toolDefinitions = [
   // ─── Devices ────────────────────────────────────────────────────────────────
   {
     name: 'list_devices',
-    description: 'List connected ADB devices with their state, model and transport id',
-    inputSchema: objectSchema({}),
+    description:
+      'List connected ADB devices with their state, model and transport id, and show which one the other tools target by default',
+    inputSchema: objectSchema({
+      refresh: { type: 'boolean', description: 'Bypass the short-lived device cache' },
+    }),
   },
   {
     name: 'device_info',
@@ -405,7 +408,7 @@ export const toolDefinitions = [
   {
     name: 'capture_screenshot',
     description:
-      'Capture a screenshot, save it under the test folder (or out_path) and return it as an image',
+      'Capture a screenshot, save the full-resolution PNG under the test folder (or out_path) and return a downscaled, compressed copy as image content',
     inputSchema: objectSchema({
       ...device,
       test_name: { type: 'string', description: 'Test folder name used for the artifact path' },
@@ -413,7 +416,26 @@ export const toolDefinitions = [
       out_path: { type: 'string', description: 'Explicit output path, overrides test/step naming' },
       include_image: {
         type: 'boolean',
-        description: 'Return the PNG as image content (default true)',
+        description: 'Return the image content (default true)',
+      },
+      max_width: {
+        type: 'number',
+        description:
+          'Downscale the returned image to this width in pixels, keeping the aspect ratio (default 720, 0 keeps the original size)',
+      },
+      quality: {
+        type: 'number',
+        description: 'Lossy quality 1..100 for jpeg/webp (default 60)',
+      },
+      format: {
+        type: 'string',
+        enum: ['auto', 'jpeg', 'webp', 'png', 'none'],
+        description:
+          'Format of the returned image. "auto" (default) uses jpeg when the optional sharp dependency is installed and a resized png otherwise. "none" returns the untouched PNG.',
+      },
+      save_compressed: {
+        type: 'boolean',
+        description: 'Also write the compressed copy next to the PNG on disk',
       },
     }),
   },

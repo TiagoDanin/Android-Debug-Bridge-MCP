@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { AdbOptions, adbPath, adb } from '../core/adb.js';
+import { AdbOptions, adbPath, adb, cachedDevices, describeDevice } from '../core/adb.js';
 import {
   appInfo,
   clearAppData,
@@ -17,6 +17,7 @@ import {
 import { createTestFolder, listArtifacts } from '../core/artifacts.js';
 import {
   connectDevice,
+  defaultDevice,
   deviceInfo,
   disconnectDevice,
   listDevices,
@@ -24,6 +25,7 @@ import {
   waitForBoot,
 } from '../core/device.js';
 import { CoordinateMode, clearScreenSizeCache } from '../core/geometry.js';
+import { ImageFormat, compressionDefaults, describeCompression, hasSharp } from '../core/image.js';
 import {
   KEY_CODES,
   ScrollDirection,
@@ -76,6 +78,7 @@ import {
   MatchedElement,
   FindQuery,
 } from '../core/ui.js';
+import { workingDirectoryStatus } from '../utils/cwd.js';
 import { FlagValue, flagBoolean, flagNumber, flagString, parseToggleValue } from './args.js';
 import { CommandResult } from './output.js';
 import { listSkills, readSkill } from './skills.js';
@@ -173,21 +176,28 @@ export const registry: Record<string, CommandGroup> = {
     summary: 'Inspect, select and connect devices',
     commands: {
       list: {
-        usage: 'device list',
-        summary: 'List connected devices',
+        usage: 'device list [--refresh]',
+        summary: 'List connected devices and show the default target',
         run: async (ctx) => {
-          const devices = listDevices(ctx.adb);
+          const devices = cachedDevices(flagBoolean(ctx.flags, 'refresh'));
+          const target = defaultDevice();
           const summary =
             devices.length === 0
               ? 'No devices found'
               : devices
                   .map(
                     (entry) =>
-                      `${entry.serial}\t${entry.state}\t${entry.model ?? '-'}${entry.isEmulator ? '\t[emulator]' : ''}`
+                      `${entry.serial === target?.serial ? '*' : ' '} ${entry.serial}\t${entry.state}\t${entry.model ?? '-'}${entry.isEmulator ? '\t[emulator]' : ''}`
                   )
                   .join('\n');
 
-          return { summary, data: devices };
+          return {
+            summary: devices.length > 1 && !target
+              ? `${summary}\n\nNo default target: pass --device <serial|prefix|model> or set ADB_SERIAL.`
+              : summary,
+            // Stays an array so `.data[]` keeps working; the target is a field.
+            data: devices.map((entry) => ({ ...entry, default: entry.serial === target?.serial })),
+          };
         },
       },
       info: {
@@ -672,8 +682,9 @@ export const registry: Record<string, CommandGroup> = {
     summary: 'Screenshots, recording, rotation and lock state',
     commands: {
       shot: {
-        usage: 'screen shot [--out <file>] [--test <name>] [--step <name>] [--base64]',
-        summary: 'Capture a screenshot',
+        usage:
+          'screen shot [--out <file>] [--test <name>] [--step <name>] [--base64] [--max-width <px>] [--quality <1..100>] [--format auto|jpeg|webp|png|none] [--no-compress] [--save-compressed]',
+        summary: 'Capture a screenshot (PNG on disk, compressed copy in the output)',
         run: async (ctx) => {
           const explicit = flagString(ctx.flags, 'out') ?? ctx.positionals[0];
           const testName = flagString(ctx.flags, 'test');
@@ -683,17 +694,36 @@ export const registry: Record<string, CommandGroup> = {
             screenshotPath(testName, stepName) ??
             path.join(artifactRoot(), `screenshot-${timestamp()}.png`);
 
-          const result = await captureScreenshot(target, ctx.adb);
+          const result = await captureScreenshot(target, ctx.adb, {
+            maxWidth: flagNumber(ctx.flags, 'max-width'),
+            quality: flagNumber(ctx.flags, 'quality'),
+            format: flagString(ctx.flags, 'format') as ImageFormat | undefined,
+            compress: !flagBoolean(ctx.flags, 'no-compress'),
+            saveCompressed: flagBoolean(ctx.flags, 'save-compressed'),
+          });
+
           const wantsBase64 = flagBoolean(ctx.flags, 'base64');
+          const lines = [
+            `${result.path} (${result.originalBytes} bytes, ${result.screen.width}x${result.screen.height})`,
+            ...(result.compressedPath ? [`${result.compressedPath}`] : []),
+            `returned ${describeCompression(result.image)}`,
+          ];
 
           return {
-            summary: wantsBase64
-              ? `${result.path}\n${result.base64}`
-              : `${result.path} (${result.bytes} bytes, ${result.screen.width}x${result.screen.height})`,
+            summary: wantsBase64 ? `${lines.join('\n')}\n${result.base64}` : lines.join('\n'),
             data: {
               path: result.path,
+              compressedPath: result.compressedPath,
               bytes: result.bytes,
+              originalBytes: result.originalBytes,
+              mimeType: result.mimeType,
               screen: result.screen,
+              compression: {
+                engine: result.image.engine,
+                width: result.image.width,
+                height: result.image.height,
+                ...(result.image.note ? { note: result.image.note } : {}),
+              },
               ...(wantsBase64 ? { base64: result.base64 } : {}),
             },
           };
@@ -1044,18 +1074,39 @@ export const registry: Record<string, CommandGroup> = {
             });
           }
 
+          const cwd = workingDirectoryStatus();
+          checks.push({
+            name: 'workdir',
+            ok: cwd.ok,
+            detail: cwd.ok
+              ? cwd.path
+              : `original working directory is gone (uv_cwd) — using ${cwd.path}`,
+          });
+
+          const defaults = compressionDefaults();
+          checks.push({
+            name: 'screenshots',
+            ok: true,
+            detail: `${hasSharp() ? 'sharp' : 'built-in png resizer'} — max width ${defaults.maxWidth || 'original'}, format ${defaults.format}, quality ${defaults.quality}`,
+          });
+
+          const passed = (name: string) => checks.some((check) => check.name === name && check.ok);
+
           let devices: ReturnType<typeof listDevices> = [];
-          if (checks[0]?.ok) {
+          if (passed('adb')) {
             try {
               devices = listDevices();
               const ready = devices.filter((entry) => entry.state === 'device');
+              const target = defaultDevice();
               checks.push({
                 name: 'devices',
                 ok: ready.length > 0,
                 detail:
-                  ready.length > 0
-                    ? `${ready.length} ready: ${ready.map((entry) => entry.serial).join(', ')}`
-                    : 'no ready device — start an emulator or connect one',
+                  ready.length === 0
+                    ? 'no ready device — start an emulator or connect one'
+                    : target
+                      ? `${ready.length} ready, targeting ${describeDevice(target)}`
+                      : `${ready.length} ready (${ready.map((entry) => entry.serial).join(', ')}) — ambiguous, pass --device or set ADB_SERIAL`,
               });
             } catch (error) {
               checks.push({
@@ -1066,7 +1117,7 @@ export const registry: Record<string, CommandGroup> = {
             }
           }
 
-          if (checks[1]?.ok) {
+          if (passed('devices')) {
             try {
               const { tree } = await dumpUI(ctx.adb);
               checks.push({ name: 'uiautomator', ok: true, detail: `${tree.all.length} elements on screen` });

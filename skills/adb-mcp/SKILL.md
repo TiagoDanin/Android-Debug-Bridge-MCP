@@ -14,7 +14,8 @@ license: MIT
 # ADB MCP Tools
 
 The `android-debug-bridge` MCP server exposes an Android device to the agent as
-tools. Every tool takes an optional `device` argument (a serial) and defaults to
+tools. Every device-facing tool takes an optional `device` argument — a full
+serial, a serial prefix, a transport id or a model name — and defaults to
 `ADB_SERIAL` or the only connected device.
 
 The same engine is available as the `adb-agent` CLI — see the `adb-cli` skill.
@@ -26,7 +27,9 @@ and per-step reasoning.
 
 Call `list_devices`. If it comes back empty, tell the user to start an emulator
 or connect a device with USB debugging enabled — do not keep trying other tools,
-they will all fail the same way.
+they will all fail the same way. If it lists more than one device, the result
+says whether there is a default target; when there is none, pick one and pass
+`device` on every later call rather than letting each tool fail in turn.
 
 Then call `device_info` once. Screen size, Android version and emulator status
 shape everything after it: which coordinates are valid, whether a permission
@@ -102,7 +105,10 @@ pass them through as-is.
 6. `list_artifacts` to report what was collected.
 
 Screenshots land in `{ADB_ARTIFACT_DIR or cwd}/{test_name}/{step_name}_step.png`
-and are also returned inline as an image.
+at full resolution, while the image returned inline is downscaled and
+compressed — the file on disk stays the artifact of record. Raise `max_width`
+(or set `format: "none"`) only when you genuinely need to read fine detail such
+as small text; the default is enough to see layout, state and labels.
 
 ## Shortcuts that avoid whole classes of failure
 
@@ -128,8 +134,8 @@ and are also returned inline as an image.
   bar or FAB sits over the point first.
 - **WebViews expose almost nothing** to the accessibility tree. Fall back to
   `capture_screenshot` plus normalized `input_tap` coordinates.
-- **Multiple devices are not guessed.** Tools fail with the list of serials;
-  pass `device` explicitly.
+- **Multiple devices are not guessed.** Tools fail with the list of candidates;
+  pass `device` explicitly — the serial, a prefix of it, or the model name.
 - **`adb_shell` is the escape hatch.** Use a dedicated tool when one exists —
   the dedicated tools parse output into structured data, `adb_shell` does not.
 
@@ -140,4 +146,6 @@ claude mcp add --scope project android-debug-bridge -- npx android-debug-bridge-
 ```
 
 Server environment: `ADB_PATH`, `ADB_SERIAL`, `ADB_SETTLE_MS`,
-`ADB_ARTIFACT_DIR`, `ADB_AUTO_UI`.
+`ADB_ARTIFACT_DIR`, `ADB_AUTO_UI`, plus `ADB_SCREENSHOT_MAX_WIDTH`,
+`ADB_SCREENSHOT_QUALITY` and `ADB_SCREENSHOT_FORMAT` to change the compression
+defaults for a whole session.

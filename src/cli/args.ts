@@ -37,6 +37,9 @@ const BOOLEAN_FLAGS = new Set([
   'continue-on-error',
   'system',
   'third-party',
+  'no-compress',
+  'save-compressed',
+  'refresh',
 ]);
 
 const ALIASES: Record<string, string> = {

@@ -4,12 +4,30 @@ import { AdbOptions, adb, adbExecOut, adbShell, settle, shellQuote } from './adb
 import { KEY_CODES } from './input.js';
 import { ScreenSize, screenRotation, screenSize } from './device.js';
 import { clearScreenSizeCache } from './geometry.js';
+import { CompressOptions, CompressedImage, compressScreenshot } from './image.js';
+import { safeCwd } from '../utils/cwd.js';
 
 export interface ScreenshotResult {
+  /** Where the original PNG was written, when a path was given. */
   path: string | null;
+  /** Where the compressed copy was written, when `saveCompressed` was set. */
+  compressedPath: string | null;
+  /** Payload for the caller — compressed unless compression was disabled. */
   base64: string;
+  mimeType: string;
+  /** Size of the payload above. */
   bytes: number;
+  /** Size of the PNG that came off the device. */
+  originalBytes: number;
   screen: ScreenSize;
+  image: CompressedImage;
+}
+
+export interface ScreenshotOptions extends CompressOptions {
+  /** Skip compression and return the raw PNG. */
+  compress?: boolean;
+  /** Also write the compressed copy next to the PNG. */
+  saveCompressed?: boolean;
 }
 
 export interface ScreenState {
@@ -21,7 +39,7 @@ export interface ScreenState {
 
 /** Base folder for artifacts. Override with ADB_ARTIFACT_DIR. */
 export function artifactRoot(): string {
-  return process.env.ADB_ARTIFACT_DIR || process.cwd();
+  return process.env.ADB_ARTIFACT_DIR || safeCwd();
 }
 
 /**
@@ -36,10 +54,15 @@ export function screenshotPath(testName?: string, stepName?: string): string | n
   return path.join(folder, name);
 }
 
-/** Capture the screen. Writes to `outPath` when given and always returns base64. */
+/**
+ * Capture the screen. Writes the PNG to `outPath` when given, and returns a
+ * compressed payload — a raw screenshot is megabytes of base64 that nobody
+ * reading it actually needs at full resolution.
+ */
 export async function captureScreenshot(
   outPath?: string | null,
-  options: AdbOptions = {}
+  options: AdbOptions = {},
+  screenshotOptions: ScreenshotOptions = {}
 ): Promise<ScreenshotResult> {
   const buffer = adbExecOut('screencap -p', options);
 
@@ -52,11 +75,35 @@ export async function captureScreenshot(
     fs.writeFileSync(outPath, buffer);
   }
 
+  const image = await compressScreenshot(buffer, {
+    maxWidth: screenshotOptions.maxWidth,
+    quality: screenshotOptions.quality,
+    format: screenshotOptions.compress === false ? 'none' : screenshotOptions.format,
+  });
+
+  let compressedPath: string | null = null;
+
+  if (outPath && screenshotOptions.saveCompressed && image.engine !== 'none') {
+    const candidate = path.join(
+      path.dirname(outPath),
+      `${path.basename(outPath, path.extname(outPath))}.${image.extension}`
+    );
+
+    if (candidate !== outPath) {
+      fs.writeFileSync(candidate, image.buffer);
+      compressedPath = candidate;
+    }
+  }
+
   return {
     path: outPath ?? null,
-    base64: buffer.toString('base64'),
-    bytes: buffer.length,
+    compressedPath,
+    base64: image.buffer.toString('base64'),
+    mimeType: image.mimeType,
+    bytes: image.bytes,
+    originalBytes: buffer.length,
     screen: screenSize(options),
+    image,
   };
 }
 

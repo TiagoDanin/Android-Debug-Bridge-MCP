@@ -29,6 +29,9 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "xml2js": "^0.6.2"
   },
+  "optionalDependencies": {
+    "sharp": "^0.34.5"
+  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/xml2js": "^0.4.14",

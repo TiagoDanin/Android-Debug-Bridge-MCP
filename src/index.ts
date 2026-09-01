@@ -1,5 +1,12 @@
 #!/usr/bin/env node
 
+import { ensureWorkingDirectory } from './utils/cwd.js';
+
+// Before anything touches the filesystem: MCP clients often spawn this server
+// from a directory that no longer exists (WSL mounts, deleted project folders),
+// and Node then throws ENOENT/uv_cwd on the first fs call.
+const workingDirectory = ensureWorkingDirectory();
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -48,9 +55,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  
-  // Optional: Log server start
-  console.error('MCP ADB Server started');
+
+  console.error(
+    `MCP ADB Server started (artifacts in ${workingDirectory.path}${
+      workingDirectory.ok ? '' : ', recovered from an invalid working directory'
+    })`
+  );
 }
 
 main().catch((error) => {

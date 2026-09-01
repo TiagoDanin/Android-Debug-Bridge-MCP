@@ -1,5 +1,11 @@
 #!/usr/bin/env node
 
+import { ensureWorkingDirectory } from '../utils/cwd.js';
+
+// A shell can outlive the directory it was started in — and under WSL a
+// Windows path can vanish mid-session. Recover before any fs call.
+ensureWorkingDirectory();
+
 import * as fs from 'fs';
 import * as path from 'path';
 import { AdbOptions } from '../core/adb.js';

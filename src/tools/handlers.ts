@@ -1,5 +1,5 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
-import { AdbOptions } from '../core/adb.js';
+import { AdbOptions, cachedDevices, describeDevice } from '../core/adb.js';
 import {
   appInfo,
   clearAppData,
@@ -17,12 +17,13 @@ import {
 import { createTestFolder, listArtifacts } from '../core/artifacts.js';
 import {
   connectDevice,
+  defaultDevice,
   deviceInfo,
   disconnectDevice,
-  listDevices,
   rebootDevice,
   waitForBoot,
 } from '../core/device.js';
+import { ImageFormat, describeCompression } from '../core/image.js';
 import { CoordinateMode, clearScreenSizeCache } from '../core/geometry.js';
 import {
   ScrollDirection,
@@ -144,22 +145,30 @@ const coordinateModeOf = (args: any): CoordinateMode => (args?.mode as Coordinat
 export const toolHandlers = {
   // ─── Devices ────────────────────────────────────────────────────────────────
   list_devices: async (args: any) => {
-    const devices = listDevices(adbOptions(args));
+    const devices = cachedDevices(args?.refresh === true);
 
     if (devices.length === 0) {
       return textResult('No devices found. Start an emulator or connect a device with USB debugging enabled.');
     }
 
+    const target = defaultDevice();
     const summary = devices
       .map(
         (entry) =>
-          `${entry.serial} — ${entry.state}${entry.model ? ` (${entry.model})` : ''}${
-            entry.isEmulator ? ' [emulator]' : ''
-          }`
+          `${entry.serial === target?.serial ? '→ ' : '  '}${entry.serial} — ${entry.state}${
+            entry.model ? ` (${entry.model})` : ''
+          }${entry.isEmulator ? ' [emulator]' : ''}`
       )
       .join('\n');
 
-    return dataResult(`DEVICES (${devices.length}):\n${summary}`, devices);
+    const footer = target
+      ? `\nDefault target: ${describeDevice(target)}`
+      : '\nNo default target — pass "device" to every tool, or set ADB_SERIAL.';
+
+    return dataResult(
+      `DEVICES (${devices.length}):\n${summary}${footer}`,
+      devices.map((entry) => ({ ...entry, default: entry.serial === target?.serial }))
+    );
   },
 
   device_info: async (args: any) => {
@@ -515,25 +524,39 @@ export const toolHandlers = {
 
   // ─── Screen ─────────────────────────────────────────────────────────────────
   capture_screenshot: async (args: any) => {
-    const { test_name, step_name, out_path, include_image } = args as {
-      test_name?: string;
-      step_name?: string;
-      out_path?: string;
-      include_image?: boolean;
-    };
+    const { test_name, step_name, out_path, include_image, max_width, quality, format, save_compressed } =
+      args as {
+        test_name?: string;
+        step_name?: string;
+        out_path?: string;
+        include_image?: boolean;
+        max_width?: number;
+        quality?: number;
+        format?: ImageFormat;
+        save_compressed?: boolean;
+      };
 
     const target = out_path ?? screenshotPath(test_name, step_name);
-    const result = await captureScreenshot(target, adbOptions(args));
+    const result = await captureScreenshot(target, adbOptions(args), {
+      maxWidth: max_width,
+      quality,
+      format,
+      saveCompressed: save_compressed,
+    });
+
+    const where = result.path
+      ? `Screenshot captured: ${result.path}`
+      : 'Screenshot captured in memory';
+    const saved = result.compressedPath ? `\nCompressed copy: ${result.compressedPath}` : '';
+
     const content: Content = [
       textBlock(
-        result.path
-          ? `Screenshot captured: ${result.path} (${result.bytes} bytes, ${result.screen.width}x${result.screen.height})`
-          : `Screenshot captured in memory (${result.bytes} bytes, ${result.screen.width}x${result.screen.height})`
+        `${where} — screen ${result.screen.width}x${result.screen.height}\nReturned: ${describeCompression(result.image)}${saved}`
       ),
     ];
 
     if (include_image !== false) {
-      content.push({ type: 'image', data: result.base64, mimeType: 'image/png' });
+      content.push({ type: 'image', data: result.base64, mimeType: result.mimeType });
     }
 
     return { content };
